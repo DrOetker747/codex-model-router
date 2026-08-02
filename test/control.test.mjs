@@ -124,6 +124,8 @@ test("codex probe includes native GPT models and the configured default", () => 
       gatewayModel: "gpt-5.6-terra",
       enabled: true,
       native: true,
+      pickerVisibility: "list",
+      family: "GPT",
     },
   );
   assert.equal(slice.models.some((model) => model.slug === "codex-auto-review"), false);

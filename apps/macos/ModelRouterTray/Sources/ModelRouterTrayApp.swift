@@ -95,6 +95,8 @@ final class RouterStore: ObservableObject {
   @Published private(set) var maintenanceMessage: String?
   @Published private(set) var maintenanceSucceeded = false
   @Published private(set) var islandMode: IslandMode
+  @Published private(set) var modelSelectionInProgress = false
+  @Published private(set) var modelSelectionError: String?
 
   private var polling = false
   private var activityPolling = false
@@ -682,6 +684,27 @@ final class RouterStore: ObservableObject {
     }
   }
 
+  func selectModel(_ slug: String, restart: Bool) async {
+    guard !modelSelectionInProgress else { return }
+    modelSelectionInProgress = true
+    modelSelectionError = nil
+    defer { modelSelectionInProgress = false }
+    do {
+      _ = try await runControl(arguments: ["model-set", slug])
+      await refresh()
+      if restart {
+        try await restartCodexApp()
+        message = "Codex restarted with the selected model."
+      } else {
+        message = "Model saved for the next Codex task."
+      }
+    } catch {
+      modelSelectionError = error.localizedDescription
+      message = error.localizedDescription
+      await refresh()
+    }
+  }
+
   private func performProviderOperation(
     _ provider: String,
     successMessage: String,
@@ -1115,6 +1138,9 @@ struct RouterModel: Decodable, Identifiable {
   let displayName: String
   let provider: String
   let enabled: Bool
+  let pickerVisibility: String?
+  let native: Bool?
+  let family: String?
   var id: String { slug }
 }
 

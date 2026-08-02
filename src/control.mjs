@@ -66,10 +66,29 @@ function nativeCodexModels(catalogPath) {
         gatewayModel: model.slug,
         enabled: true,
         native: true,
+        pickerVisibility: "list",
+        family: modelFamily(model.slug, model.display_name || model.slug),
       }));
   } catch {
     return [];
   }
+}
+
+function modelFamily(slug, displayName = "") {
+  const value = `${slug} ${displayName}`.toLowerCase();
+  const families = [
+    ["deepseek", "DeepSeek"],
+    ["minimax", "MiniMax"],
+    ["big-pickle", "Free"],
+    ["qwen", "Qwen"],
+    ["kimi", "Kimi"],
+    ["grok", "Grok"],
+    ["mimo", "MiMo"],
+    ["glm", "GLM"],
+    ["hy", "HY"],
+    ["gpt", "GPT"],
+  ];
+  return families.find(([needle]) => value.includes(needle))?.[1] || "Other";
 }
 
 // --- per-target probes (run with MODEL_ROUTER_TARGET set) -------------------
@@ -95,6 +114,9 @@ async function emitProbe() {
     provider: model.provider,
     gatewayModel: model.gatewayModel,
     enabled: enabledProviders.includes(model.provider),
+    native: false,
+    pickerVisibility: model.pickerVisibility || "list",
+    family: modelFamily(model.slug, model.displayName),
   }));
   const models = TARGET === "codex"
     ? [...nativeCodexModels(NATIVE_CATALOG_PATH), ...routedModels]
