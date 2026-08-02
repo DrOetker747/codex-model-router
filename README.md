@@ -358,7 +358,9 @@ For a focused model selector in the menu bar, run:
 It provides searchable **SOTA**, **OpenCode Go**, and strictly **Free** tabs.
 Selecting a row always asks whether to save it for the next task or gracefully
 restart Codex. The current task is never changed. Favorites stay on this Mac,
-and catalog updates appear after refresh without rebuilding the app.
+and catalog updates appear after refresh without rebuilding the app. Provider
+settings accept API keys through a secure field and show models in SOTA only
+after that provider is both authenticated and enabled.
 
 The app also places a Dynamic-Island-style overlay at the top center of the
 active display. It follows the provider handling the latest request, reveals

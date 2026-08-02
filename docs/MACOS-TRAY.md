@@ -114,6 +114,13 @@ Favorites are stored only in macOS user defaults. After selecting a model, the
 app asks whether to save it for a new task or gracefully restart Codex. It never
 force-quits Codex and never changes a running task.
 
+The gear button opens provider settings. Connected providers can be enabled or
+hidden, while unconfigured API providers accept a key in a native secure field.
+Keys travel to the control process through standard input and are never stored
+in app preferences or command arguments. A provider without usable credentials
+cannot appear in SOTA. The provider supplying the current model cannot be
+disabled until another model is selected.
+
 Build or refresh the installed app with:
 
 ```sh

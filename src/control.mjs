@@ -57,8 +57,26 @@ function nativeCodexModels(catalogPath) {
   if (!existsSync(catalogPath)) return [];
   try {
     const parsed = JSON.parse(readFileSync(catalogPath, "utf8"));
-    return (Array.isArray(parsed.models) ? parsed.models : [])
-      .filter((model) => model.visibility === "list" && typeof model.slug === "string")
+    const listed = (Array.isArray(parsed.models) ? parsed.models : [])
+      .filter((model) => model.visibility === "list" && typeof model.slug === "string");
+    const versions = [...new Set(
+      listed
+        .map((model) => String(model.slug).match(/^gpt-(\d+)\.(\d+)(?:-|$)/))
+        .filter(Boolean)
+        .map((match) => `${match[1]}.${match[2]}`),
+    )]
+      .sort((left, right) => {
+        const [leftMajor, leftMinor] = left.split(".").map(Number);
+        const [rightMajor, rightMinor] = right.split(".").map(Number);
+        return rightMajor - leftMajor || rightMinor - leftMinor;
+      })
+      .slice(0, 2);
+    const currentVersions = new Set(versions);
+    return listed
+      .filter((model) => {
+        const match = String(model.slug).match(/^gpt-(\d+)\.(\d+)(?:-|$)/);
+        return !match || currentVersions.has(`${match[1]}.${match[2]}`);
+      })
       .map((model) => ({
         slug: model.slug,
         displayName: model.display_name || model.slug,
@@ -100,11 +118,12 @@ async function emitProbe() {
     TARGET,
     PROVIDER_SELECTION_PATH,
   } = await import("./paths.mjs");
-  const { readProviderSelection } = await import("./provider-selection.mjs");
+  const { configuredProviderIds, readProviderSelection } = await import("./provider-selection.mjs");
   const { LISTED_MODELS, PROVIDERS } = await import("./model-registry.mjs");
   const { readNativeAliases } = await import("./native-alias.mjs");
 
   const enabledProviders = readProviderSelection();
+  const configuredProviders = new Set(configuredProviderIds());
   const usageEvents = TARGET === "codex"
     ? (await import("./usage-events.mjs")).recentUsageEvents()
     : [];
@@ -113,7 +132,7 @@ async function emitProbe() {
     displayName: model.displayName,
     provider: model.provider,
     gatewayModel: model.gatewayModel,
-    enabled: enabledProviders.includes(model.provider),
+    enabled: enabledProviders.includes(model.provider) && configuredProviders.has(model.provider),
     native: false,
     pickerVisibility: model.pickerVisibility || "list",
     family: modelFamily(model.slug, model.displayName),

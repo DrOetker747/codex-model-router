@@ -11,6 +11,10 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
 @implementation ModelButton
 @end
 
+@interface ProviderSettingsWindowController : NSWindowController <NSSearchFieldDelegate>
+- (instancetype)initWithSourceRoot:(NSString *)sourceRoot;
+@end
+
 @interface PickerViewController : NSViewController <NSSearchFieldDelegate>
 @property(nonatomic, copy) NSString *sourceRoot;
 @property(nonatomic, strong) NSArray<NSDictionary *> *models;
@@ -23,6 +27,7 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
 @property(nonatomic, strong) NSStackView *modelStack;
 @property(nonatomic, strong) NSProgressIndicator *progress;
 @property(nonatomic) BOOL busy;
+@property(nonatomic, strong) NSWindowController *providerSettings;
 - (void)refresh;
 @end
 
@@ -70,6 +75,10 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
   [dot.heightAnchor constraintEqualToConstant:8].active = YES;
   [header addArrangedSubview:dot];
   [header addArrangedSubview:[self label:@"Online" size:10 weight:NSFontWeightMedium color:Muted()]];
+  NSButton *settings = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"gearshape" accessibilityDescription:@"Provider settings"] target:self action:@selector(openProviderSettings:)];
+  settings.bezelStyle = NSBezelStyleInline;
+  settings.toolTip = @"Provider settings";
+  [header addArrangedSubview:settings];
   [content addArrangedSubview:header];
   [header.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
 
@@ -168,6 +177,14 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
 }
 
 - (void)refreshClicked:(id)sender { [self refresh]; }
+- (void)openProviderSettings:(id)sender {
+  if (!self.providerSettings) {
+    self.providerSettings = [[ProviderSettingsWindowController alloc] initWithSourceRoot:self.sourceRoot];
+  }
+  [NSApp activateIgnoringOtherApps:YES];
+  [self.providerSettings showWindow:nil];
+  [self.providerSettings.window makeKeyAndOrderFront:nil];
+}
 - (void)tabChanged:(id)sender { [self rebuildRows]; }
 - (void)controlTextDidChange:(NSNotification *)obj { [self rebuildRows]; }
 
@@ -262,7 +279,7 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
   for (NSDictionary *model in self.models) {
     NSString *provider = model[@"provider"] ?: @"";
     NSString *visibility = model[@"pickerVisibility"] ?: @"list";
-    BOOL matchesTab = tab == 0 ? [visibility isEqual:@"list"]
+    BOOL matchesTab = tab == 0 ? ([visibility isEqual:@"list"] && ([model[@"native"] boolValue] || [model[@"enabled"] boolValue]))
       : tab == 1 ? [provider isEqual:@"opencode-go"]
       : [provider isEqual:@"opencode-free"];
     if (!matchesTab) continue;
@@ -347,7 +364,7 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
   [choose setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
   [row addArrangedSubview:[self spacer]];
   NSString *provider = model[@"provider"] ?: @"";
-  NSString *badge = [provider isEqual:@"opencode-free"] ? @"FREE" : [provider isEqual:@"openai"] ? @"GPT" : @"GO";
+  NSString *badge = [self badgeForProvider:provider];
   NSTextField *badgeLabel = [self label:badge size:8 weight:NSFontWeightBold color:[provider isEqual:@"opencode-free"] ? Mint() : [provider isEqual:@"openai"] ? Accent() : Purple()];
   [row addArrangedSubview:badgeLabel];
   ModelButton *star = [ModelButton buttonWithImage:[NSImage imageWithSystemSymbolName:[self.favorites containsObject:slug] ? @"star.fill" : @"star" accessibilityDescription:@"Favorite"] target:self action:@selector(favoriteClicked:)];
@@ -362,6 +379,17 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
     [row addArrangedSubview:check];
   }
   return box;
+}
+
+- (NSString *)badgeForProvider:(NSString *)provider {
+  if ([provider isEqual:@"openai"]) return @"GPT";
+  if ([provider isEqual:@"opencode-go"]) return @"GO";
+  if ([provider isEqual:@"opencode-free"]) return @"FREE";
+  if ([provider isEqual:@"ollama-cloud"]) return @"OLLAMA";
+  if ([provider hasSuffix:@"-oauth"]) return @"OAUTH";
+  if ([provider containsString:@"plan"] || [provider isEqual:@"zai-coding"]) return @"PLAN";
+  NSString *base = [[provider componentsSeparatedByString:@"-"] firstObject].uppercaseString;
+  return base.length > 7 ? [base substringToIndex:7] : base;
 }
 
 - (void)favoriteClicked:(ModelButton *)sender {
@@ -435,6 +463,303 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
   }];
   dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
   if (openError && error) *error = openError;
+}
+
+@end
+
+@interface ProviderSettingsWindowController ()
+@property(nonatomic, copy) NSString *sourceRoot;
+@property(nonatomic, strong) NSArray<NSDictionary *> *providers;
+@property(nonatomic, strong) NSDictionary *target;
+@property(nonatomic, strong) NSStackView *providerStack;
+@property(nonatomic, strong) NSSearchField *searchField;
+@property(nonatomic, strong) NSTextField *statusLabel;
+@end
+
+@implementation ProviderSettingsWindowController
+
+- (instancetype)initWithSourceRoot:(NSString *)sourceRoot {
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 520, 620)
+    styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
+    backing:NSBackingStoreBuffered defer:NO];
+  window.title = @"Model Router · Providers";
+  window.minSize = NSMakeSize(480, 500);
+  if ((self = [super initWithWindow:window])) {
+    self.sourceRoot = sourceRoot;
+    [self buildInterface];
+    [self refresh];
+  }
+  return self;
+}
+
+- (NSTextField *)label:(NSString *)text size:(CGFloat)size weight:(NSFontWeight)weight color:(NSColor *)color {
+  NSTextField *label = [NSTextField labelWithString:text];
+  label.font = [NSFont systemFontOfSize:size weight:weight];
+  label.textColor = color;
+  return label;
+}
+
+- (NSView *)spacer {
+  NSView *view = [[NSView alloc] init];
+  [view setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [view setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+  return view;
+}
+
+- (void)buildInterface {
+  NSVisualEffectView *root = [[NSVisualEffectView alloc] init];
+  root.material = NSVisualEffectMaterialSidebar;
+  root.blendingMode = NSVisualEffectBlendingModeBehindWindow;
+  root.state = NSVisualEffectStateActive;
+  self.window.contentView = root;
+  NSStackView *content = [NSStackView stackViewWithViews:@[]];
+  content.orientation = NSUserInterfaceLayoutOrientationVertical;
+  content.alignment = NSLayoutAttributeLeading;
+  content.spacing = 12;
+  content.translatesAutoresizingMaskIntoConstraints = NO;
+  [root addSubview:content];
+  [NSLayoutConstraint activateConstraints:@[
+    [content.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:18],
+    [content.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-18],
+    [content.topAnchor constraintEqualToAnchor:root.topAnchor constant:18],
+    [content.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-16],
+  ]];
+
+  [content addArrangedSubview:[self label:@"Providers" size:20 weight:NSFontWeightSemibold color:NSColor.labelColor]];
+  NSTextField *intro = [self label:@"Only connected and enabled providers can appear in SOTA. Keys are sent directly to the protected router store." size:10 weight:NSFontWeightRegular color:Muted()];
+  intro.maximumNumberOfLines = 2;
+  [content addArrangedSubview:intro];
+  [intro.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
+  self.searchField = [[NSSearchField alloc] init];
+  self.searchField.placeholderString = @"Search providers";
+  self.searchField.delegate = self;
+  [content addArrangedSubview:self.searchField];
+  [self.searchField.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
+
+  NSScrollView *scroll = [[NSScrollView alloc] init];
+  scroll.drawsBackground = NO;
+  scroll.hasVerticalScroller = YES;
+  scroll.autohidesScrollers = YES;
+  self.providerStack = [NSStackView stackViewWithViews:@[]];
+  self.providerStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+  self.providerStack.alignment = NSLayoutAttributeLeading;
+  self.providerStack.spacing = 7;
+  self.providerStack.edgeInsets = NSEdgeInsetsMake(2, 0, 6, 6);
+  self.providerStack.translatesAutoresizingMaskIntoConstraints = NO;
+  scroll.documentView = self.providerStack;
+  [self.providerStack.widthAnchor constraintEqualToAnchor:scroll.contentView.widthAnchor].active = YES;
+  [content addArrangedSubview:scroll];
+  [scroll.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
+
+  NSStackView *footer = [NSStackView stackViewWithViews:@[]];
+  footer.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  self.statusLabel = [self label:@"Loading provider status…" size:9 weight:NSFontWeightRegular color:Muted()];
+  [footer addArrangedSubview:self.statusLabel];
+  [footer addArrangedSubview:[self spacer]];
+  NSButton *refresh = [NSButton buttonWithTitle:@"Refresh" target:self action:@selector(refreshClicked:)];
+  refresh.bezelStyle = NSBezelStyleRounded;
+  [footer addArrangedSubview:refresh];
+  [content addArrangedSubview:footer];
+  [footer.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
+}
+
+- (void)controlTextDidChange:(NSNotification *)obj { [self rebuildRows]; }
+- (void)refreshClicked:(id)sender { [self refresh]; }
+
+- (NSData *)runControl:(NSArray<NSString *> *)arguments input:(NSData *)input error:(NSError **)error {
+  NSTask *task = [[NSTask alloc] init];
+  task.executableURL = [NSURL fileURLWithPath:[self.sourceRoot stringByAppendingPathComponent:@"bin/control"]];
+  task.arguments = arguments;
+  task.currentDirectoryURL = [NSURL fileURLWithPath:self.sourceRoot];
+  NSMutableDictionary *environment = [NSProcessInfo.processInfo.environment mutableCopy];
+  NSString *home = NSHomeDirectory();
+  environment[@"PATH"] = [NSString stringWithFormat:@"%@/.local/bin:%@/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:%@", home, home, environment[@"PATH"] ?: @""];
+  task.environment = environment;
+  NSPipe *output = [NSPipe pipe];
+  NSPipe *errors = [NSPipe pipe];
+  NSPipe *standardInput = input ? [NSPipe pipe] : nil;
+  task.standardOutput = output;
+  task.standardError = errors;
+  task.standardInput = standardInput;
+  if (![task launchAndReturnError:error]) return nil;
+  if (input) {
+    [standardInput.fileHandleForWriting writeData:input];
+    [standardInput.fileHandleForWriting closeFile];
+  }
+  [task waitUntilExit];
+  NSData *data = [output.fileHandleForReading readDataToEndOfFile];
+  NSData *errorData = [errors.fileHandleForReading readDataToEndOfFile];
+  if (task.terminationStatus != 0) {
+    NSString *detail = [[NSString alloc] initWithData:errorData encoding:NSUTF8StringEncoding];
+    if (error) *error = [NSError errorWithDomain:@"ModelPicker" code:task.terminationStatus userInfo:@{NSLocalizedDescriptionKey:detail.length ? [detail stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] : @"Provider update failed."}];
+    return nil;
+  }
+  return data;
+}
+
+- (void)refresh {
+  self.statusLabel.stringValue = @"Refreshing provider status…";
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSError *error;
+    NSData *providerData = [self runControl:@[@"providers", @"--json"] input:nil error:&error];
+    NSDictionary *providerSnapshot = providerData ? [NSJSONSerialization JSONObjectWithData:providerData options:0 error:&error] : nil;
+    NSData *targetData = !error ? [self runControl:@[@"--json"] input:nil error:&error] : nil;
+    NSDictionary *targetSnapshot = targetData ? [NSJSONSerialization JSONObjectWithData:targetData options:0 error:&error] : nil;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (error) {
+        self.statusLabel.stringValue = error.localizedDescription;
+        return;
+      }
+      self.providers = providerSnapshot[@"providers"] ?: @[];
+      self.target = targetSnapshot[@"targets"][@"codex"] ?: @{};
+      [self rebuildRows];
+      NSUInteger connected = [[self.providers filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *provider, NSDictionary *_) {
+        return [provider[@"configured"] boolValue];
+      }]] count];
+      self.statusLabel.stringValue = [NSString stringWithFormat:@"%lu connected · changes apply to new tasks", (unsigned long)connected];
+    });
+  });
+}
+
+- (void)rebuildRows {
+  for (NSView *view in self.providerStack.arrangedSubviews.copy) {
+    [self.providerStack removeArrangedSubview:view];
+    [view removeFromSuperview];
+  }
+  NSString *query = self.searchField.stringValue.lowercaseString;
+  NSArray *sorted = [self.providers sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+    BOOL lc = [left[@"configured"] boolValue], rc = [right[@"configured"] boolValue];
+    if (lc != rc) return lc ? NSOrderedAscending : NSOrderedDescending;
+    return [left[@"displayName"] localizedCaseInsensitiveCompare:right[@"displayName"]];
+  }];
+  NSString *previousSection;
+  for (NSDictionary *provider in sorted) {
+    NSString *haystack = [NSString stringWithFormat:@"%@ %@", provider[@"displayName"] ?: @"", provider[@"id"] ?: @""];
+    if (query.length && [haystack.lowercaseString rangeOfString:query].location == NSNotFound) continue;
+    NSString *section = [provider[@"configured"] boolValue] ? @"Connected" : @"Available";
+    if (![section isEqual:previousSection]) {
+      NSTextField *heading = [self label:section.uppercaseString size:9 weight:NSFontWeightBold color:Muted()];
+      [heading.heightAnchor constraintEqualToConstant:20].active = YES;
+      [self.providerStack addArrangedSubview:heading];
+      [heading.widthAnchor constraintEqualToAnchor:self.providerStack.widthAnchor constant:-6].active = YES;
+      previousSection = section;
+    }
+    NSView *row = [self rowForProvider:provider];
+    [self.providerStack addArrangedSubview:row];
+    [row.widthAnchor constraintEqualToAnchor:self.providerStack.widthAnchor constant:-6].active = YES;
+  }
+}
+
+- (NSView *)rowForProvider:(NSDictionary *)provider {
+  NSString *providerID = provider[@"id"];
+  BOOL configured = [provider[@"configured"] boolValue];
+  BOOL enabled = [self.target[@"enabledProviders"] containsObject:providerID];
+  NSBox *box = [[NSBox alloc] init];
+  box.boxType = NSBoxCustom;
+  box.cornerRadius = 10;
+  box.fillColor = [NSColor colorWithWhite:1 alpha:0.045];
+  box.borderColor = [NSColor colorWithWhite:1 alpha:0.07];
+  box.borderWidth = 0.5;
+  [box.heightAnchor constraintEqualToConstant:56].active = YES;
+  NSStackView *row = [NSStackView stackViewWithViews:@[]];
+  row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  row.alignment = NSLayoutAttributeCenterY;
+  row.spacing = 10;
+  row.translatesAutoresizingMaskIntoConstraints = NO;
+  [box addSubview:row];
+  [NSLayoutConstraint activateConstraints:@[
+    [row.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:11],
+    [row.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-11],
+    [row.centerYAnchor constraintEqualToAnchor:box.centerYAnchor],
+  ]];
+  NSString *detail = configured ? (enabled ? @"Connected · shown in SOTA when eligible" : @"Connected · hidden from SOTA")
+    : [provider[@"kind"] isEqual:@"oauth"] ? @"Sign-in required" : @"API key required";
+  NSStackView *labels = [NSStackView stackViewWithViews:@[
+    [self label:provider[@"displayName"] ?: providerID size:12 weight:NSFontWeightMedium color:NSColor.labelColor],
+    [self label:detail size:9 weight:NSFontWeightRegular color:configured ? Muted() : NSColor.systemOrangeColor],
+  ]];
+  labels.orientation = NSUserInterfaceLayoutOrientationVertical;
+  labels.alignment = NSLayoutAttributeLeading;
+  labels.spacing = 3;
+  [row addArrangedSubview:labels];
+  [row addArrangedSubview:[self spacer]];
+  if (configured) {
+    ModelButton *toggle = [ModelButton checkboxWithTitle:@"" target:self action:@selector(toggleProvider:)];
+    toggle.buttonType = NSButtonTypeSwitch;
+    toggle.state = enabled ? NSControlStateValueOn : NSControlStateValueOff;
+    toggle.payload = provider;
+    [row addArrangedSubview:toggle];
+  } else {
+    NSString *action = provider[@"action"];
+    NSString *title = [action isEqual:@"install"] ? @"Install" : [action isEqual:@"sign-in"] ? @"Sign In" : @"Add Key";
+    ModelButton *button = [ModelButton buttonWithTitle:title target:self action:@selector(connectProvider:)];
+    button.payload = provider;
+    button.bezelStyle = NSBezelStyleRounded;
+    button.controlSize = NSControlSizeSmall;
+    [row addArrangedSubview:button];
+  }
+  return box;
+}
+
+- (NSString *)selectedProviderID {
+  NSString *selected = self.target[@"selectedModel"];
+  NSString *alias = self.target[@"nativeAliases"][selected];
+  selected = alias ?: selected;
+  for (NSDictionary *model in self.target[@"models"] ?: @[]) {
+    if ([model[@"slug"] isEqual:selected]) return model[@"provider"];
+  }
+  return @"openai";
+}
+
+- (void)toggleProvider:(ModelButton *)sender {
+  NSDictionary *provider = sender.payload;
+  NSString *providerID = provider[@"id"];
+  BOOL enabling = sender.state == NSControlStateValueOn;
+  if (!enabling && [[self selectedProviderID] isEqual:providerID]) {
+    sender.state = NSControlStateValueOn;
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Choose a different model first";
+    alert.informativeText = @"The provider currently supplies your selected model, so it cannot be disabled safely.";
+    [alert runModal];
+    return;
+  }
+  [self applyProvider:providerID enabled:enabling key:nil operation:nil];
+}
+
+- (void)connectProvider:(ModelButton *)sender {
+  NSDictionary *provider = sender.payload;
+  NSString *action = provider[@"action"];
+  if ([action isEqual:@"add-key"]) {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = [NSString stringWithFormat:@"Connect %@", provider[@"displayName"]];
+    alert.informativeText = @"The key is sent through standard input and stored only in the router's protected credential file.";
+    NSSecureTextField *field = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(0, 0, 360, 26)];
+    field.placeholderString = @"API key";
+    alert.accessoryView = field;
+    [alert addButtonWithTitle:@"Save & Enable"];
+    [alert addButtonWithTitle:@"Cancel"];
+    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+    NSString *key = [field.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!key.length) return;
+    [self applyProvider:provider[@"id"] enabled:YES key:[key dataUsingEncoding:NSUTF8StringEncoding] operation:@"credential"];
+  } else {
+    NSString *operation = [action isEqual:@"install"] ? @"install-cli" : @"login";
+    [self applyProvider:provider[@"id"] enabled:YES key:nil operation:operation];
+  }
+}
+
+- (void)applyProvider:(NSString *)providerID enabled:(BOOL)enabled key:(NSData *)key operation:(NSString *)operation {
+  self.statusLabel.stringValue = @"Applying provider settings…";
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSError *error;
+    if (operation) [self runControl:@[operation, providerID] input:key error:&error];
+    if (!error) [self runControl:@[@"set", providerID, enabled ? @"on" : @"off", @"--targets", @"codex"] input:nil error:&error];
+    if (!error) [self runControl:@[@"apply", @"--targets", @"codex", @"--activate"] input:nil error:&error];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      self.statusLabel.stringValue = error ? error.localizedDescription : @"Provider settings applied";
+      [self refresh];
+    });
+  });
 }
 
 @end

@@ -78,7 +78,7 @@ struct ModelSelectorCatalog {
   func models(for tab: ModelCatalogTab, search: String) -> [ModelSelectorEntry] {
     let tabbed = models.filter { model in
       switch tab {
-      case .sota: return model.pickerVisibility == "list"
+      case .sota: return model.pickerVisibility == "list" && (model.native || model.enabled)
       case .go: return model.provider == "opencode-go"
       case .free: return model.provider == "opencode-free"
       }

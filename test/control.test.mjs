@@ -69,11 +69,11 @@ function probe(target, providers, usageEvents = [], options = {}) {
   }
 }
 
-test("cursor probe reports enabled models", () => {
+test("cursor probe does not expose selected models without credentials", () => {
   const slice = probe("cursor", ["deepseek"]);
   assert.equal(slice.target, "cursor");
   const deepseek = slice.models.filter((m) => m.provider === "deepseek");
-  assert.ok(deepseek.length > 0 && deepseek.every((m) => m.enabled));
+  assert.ok(deepseek.length > 0 && deepseek.every((m) => !m.enabled));
 });
 
 test("codex probe exposes only privacy-safe recent usage events", () => {
@@ -131,6 +131,20 @@ test("codex probe includes native GPT models and the configured default", () => 
   assert.equal(slice.models.some((model) => model.slug === "codex-auto-review"), false);
   assert.equal(slice.loginFree, false);
   assert.equal(slice.loginFreeManaged, false);
+});
+
+test("codex probe keeps only the latest two native GPT generations", () => {
+  const slice = probe("codex", ["opencode-go"], [], {
+    nativeModels: [
+      { slug: "gpt-5.6-sol", display_name: "5.6 Sol", visibility: "list" },
+      { slug: "gpt-5.5", display_name: "5.5", visibility: "list" },
+      { slug: "gpt-5.4", display_name: "5.4", visibility: "list" },
+    ],
+  });
+  assert.deepEqual(
+    slice.models.filter((model) => model.native).map((model) => model.slug),
+    ["gpt-5.6-sol", "gpt-5.5"],
+  );
 });
 
 test("codex probe exposes managed login-free mode without credential details", () => {
