@@ -7,6 +7,7 @@ import {
   primaryCredentialPath,
   removeProviderCredential,
   writeProviderCredential,
+  writeProviderFallbackCredential,
 } from "./provider-credentials.mjs";
 import { disableProvider, enableProvider } from "./provider-selection.mjs";
 import { secretEntryFeedback, secretEntryProblem } from "./secret-entry.mjs";
@@ -18,8 +19,8 @@ import {
 const providerId = process.argv[2];
 const command = process.argv[3] || "status";
 
-if (!providerId || !new Set(["status", "set", "remove"]).has(command)) {
-  console.error("Usage: provider-key.mjs PROVIDER status|set|remove");
+if (!providerId || !new Set(["status", "set", "set-backup", "remove"]).has(command)) {
+  console.error("Usage: provider-key.mjs PROVIDER status|set|set-backup|remove");
   process.exit(2);
 }
 
@@ -201,13 +202,20 @@ if (command === "status") {
       : `${provider.displayName} key is not configured.\n`,
   );
   if (!status.configured) process.exitCode = 1;
-} else if (command === "set") {
-  const value = promptForKey(provider.credential.prompt || `${provider.displayName} API key`);
-  const target = writeProviderCredential(provider, value);
+} else if (command === "set" || command === "set-backup") {
+  const backup = command === "set-backup";
+  const value = promptForKey(
+    backup
+      ? `${provider.displayName} backup API key`
+      : provider.credential.prompt || `${provider.displayName} API key`,
+  );
+  const target = backup
+    ? writeProviderFallbackCredential(provider, value)
+    : writeProviderCredential(provider, value);
   enableProvider(provider.id);
   const refreshed = refreshTargetPickerIfInstalled();
   process.stdout.write(
-    `${provider.displayName} key saved to protected local storage at ${target}. The provider is enabled.${
+    `${provider.displayName} ${backup ? "backup " : ""}key saved to protected local storage at ${target}. The provider is enabled.${
       refreshed ? ` Fully quit and reopen ${targetPickerName()} to refresh the model picker.` : ""
     }\n`,
   );

@@ -390,6 +390,9 @@
           "OPENCODE_GO_API_KEY"
         ],
         "file": "opencode-go-api-key.secret",
+        "fallbackFiles": [
+          "opencode-go-api-key-backup.secret"
+        ],
         "legacyFiles": [],
         "keychainServices": [
           "codex-router-opencode-go"

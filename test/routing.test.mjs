@@ -916,6 +916,75 @@ test("API forwarder isolates OpenCode Go credentials and preserves tool calls", 
   }
 });
 
+test("API forwarder uses the OpenCode Go backup only after an auth failure", async () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "opencode-go-backup-"));
+  writeFileSync(
+    path.join(testRoot, "opencode-go-api-key.secret"),
+    "TEST_OPENCODE_PRIMARY\n",
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    path.join(testRoot, "opencode-go-api-key-backup.secret"),
+    "TEST_OPENCODE_BACKUP\n",
+    { mode: 0o600 },
+  );
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    const body = await bodyJson(request);
+    upstreamRequests.push({ headers: request.headers, body });
+    if (body.messages?.[0]?.content === "quota") {
+      json(response, 429, { error: { message: "quota" } });
+    } else if (request.headers.authorization === "Bearer TEST_OPENCODE_PRIMARY") {
+      json(response, 401, { error: { message: "expired" } });
+    } else {
+      json(response, 200, { choices: [] });
+    }
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    MODEL_ROUTER_STATE_DIR: testRoot,
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    OPENCODE_GO_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    OPENCODE_GO_API_KEY: "",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  const request = (content) =>
+    fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "opencode-go-kimi-k3",
+        messages: [{ role: "user", content }],
+      }),
+    });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    assert.equal((await request("fallback")).status, 200);
+    assert.deepEqual(
+      upstreamRequests.slice(0, 2).map((entry) => entry.headers.authorization),
+      ["Bearer TEST_OPENCODE_PRIMARY", "Bearer TEST_OPENCODE_BACKUP"],
+    );
+
+    assert.equal((await request("quota")).status, 429);
+    assert.equal(upstreamRequests.length, 3);
+    assert.equal(
+      upstreamRequests[2].headers.authorization,
+      "Bearer TEST_OPENCODE_PRIMARY",
+    );
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
 test("API forwarder routes OpenCode Go Anthropic and Responses models per model", async () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "opencode-go-protocols-"));
   writeFileSync(

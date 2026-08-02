@@ -21,7 +21,7 @@ import { recordRateLimitSnapshot } from "./rate-limit-state.mjs";
 import { readProviderSelection } from "./provider-selection.mjs";
 import {
   credentialStatus,
-  resolveProviderCredential,
+  resolveProviderCredentials,
 } from "./provider-credentials.mjs";
 import { VERSION } from "./version.mjs";
 
@@ -283,8 +283,8 @@ async function handleRequest(request, response) {
 
   const original = await readRequestBody(request);
   const normalized = normalizeBody(original, request.headers["content-type"], route);
-  const credential = resolveProviderCredential(normalized.provider);
-  if (!credential) {
+  const credentials = resolveProviderCredentials(normalized.provider);
+  if (credentials.length === 0) {
     const setup = credentialStatus(normalized.provider).setup;
     writeJson(response, 503, {
       error: {
@@ -302,17 +302,24 @@ async function handleRequest(request, response) {
     if (!response.writableEnded) controller.abort();
   });
   const target = `${providerBaseUrl(normalized.provider)}${route}${requestUrl.search}`;
-  const upstream = await fetch(target, {
-    method: request.method,
-    headers: upstreamHeaders(
-      request.headers,
-      normalized.body,
-      credential.value,
-      normalized.protocol,
-    ),
-    body: normalized.body,
-    signal: controller.signal,
-  });
+  let upstream;
+  for (let index = 0; index < credentials.length; index += 1) {
+    const credential = credentials[index];
+    upstream = await fetch(target, {
+      method: request.method,
+      headers: upstreamHeaders(
+        request.headers,
+        normalized.body,
+        credential.value,
+        normalized.protocol,
+      ),
+      body: normalized.body,
+      signal: controller.signal,
+    });
+    const hasBackup = index + 1 < credentials.length;
+    if (![401, 403].includes(upstream.status) || !hasBackup) break;
+    await upstream.body?.cancel();
+  }
   await pipeResponse(upstream, response);
   // Harvest the provider's own quota report from the response it just sent.
   // Costs no extra request and works for any provider that emits the standard

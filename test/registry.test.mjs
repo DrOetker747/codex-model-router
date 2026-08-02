@@ -1,14 +1,22 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { after, test } from "node:test";
 
-import { renderLiteLlmConfig } from "../src/litellm-config.mjs";
-import {
+const stateDir = mkdtempSync(path.join(tmpdir(), "codex-router-registry-test-"));
+process.env.MODEL_ROUTER_STATE_DIR = stateDir;
+
+const { renderLiteLlmConfig } = await import("../src/litellm-config.mjs");
+const {
   API_MODELS,
   LISTED_MODELS,
   MODEL_BY_SLUG,
   MODELS,
   PROVIDERS,
-} from "../src/model-registry.mjs";
+} = await import("../src/model-registry.mjs");
+
+after(() => rmSync(stateDir, { recursive: true, force: true }));
 
 test("provider registry exposes configured API and OAuth model families", () => {
   assert.deepEqual(

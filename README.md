@@ -204,6 +204,7 @@ selection and API-key files:
 ./bin/model-router cursor providers enable deepseek
 ./bin/model-router cursor provider-key deepseek set
 ./bin/model-router codex provider-key anthropic-api set
+./bin/model-router codex provider-key opencode-go set-backup
 ```
 
 On Windows, use `./model-router.ps1` with the same target and command.
@@ -211,6 +212,8 @@ On Windows, use `./model-router.ps1` with the same target and command.
 The API-key prompt disables terminal echo. Protected files use mode `600` on
 POSIX and an inheritance-disabled, current-user ACL on Windows. Diagnostics
 report credential presence and source, never the value.
+Providers with an explicit backup key slot retry that key only after HTTP 401
+or 403. They never rotate keys for quota or rate-limit responses.
 
 ## Make models appear in Codex
 

@@ -102,6 +102,7 @@ API-key providers use hidden prompts:
 ./bin/provider-key grok-api set
 ./bin/provider-key anthropic-api set
 ./bin/provider-key opencode-go set
+./bin/provider-key opencode-go set-backup
 ./bin/provider-key ollama-cloud set
 ./bin/provider-key qwen-plan set
 ./bin/provider-key zai-coding set
