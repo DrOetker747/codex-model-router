@@ -123,6 +123,11 @@ command to load new entries into the picker:
 ./bin/model-router codex update
 ```
 
+The optional `opencode-free` provider uses the same protected OpenCode keys but
+accepts only `big-pickle` and model IDs ending in `-free`. Paid Zen entries are
+rejected before they can enter local state. All Free models and older Go
+fallbacks remain routable while staying hidden from Codex's main picker.
+
 
 
 The Ollama Cloud entries bill through an ollama.com account and can host the
@@ -343,6 +348,17 @@ It shows Codex health, detailed usage for the active provider, a seven-day
 overview of every configured or previously used provider, and auto-applied
 provider controls in a native glass macOS interface. See the
 [macOS tray guide](docs/MACOS-TRAY.md) for behavior and rebuild notes.
+
+For a focused model selector in the menu bar, run:
+
+```sh
+./bin/model-picker
+```
+
+It provides searchable **SOTA**, **OpenCode Go**, and strictly **Free** tabs.
+Selecting a row always asks whether to save it for the next task or gracefully
+restart Codex. The current task is never changed. Favorites stay on this Mac,
+and catalog updates appear after refresh without rebuilding the app.
 
 The app also places a Dynamic-Island-style overlay at the top center of the
 active display. It follows the provider handling the latest request, reveals

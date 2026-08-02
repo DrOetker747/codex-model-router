@@ -98,6 +98,31 @@ appearance. It intentionally uses standard system typography, controls, and
 separators rather than applying a second opaque dashboard skin inside the
 popover.
 
+## Focused model picker
+
+The separate **Model Picker** menu-bar app keeps Codex's main picker concise
+while retaining access to every routed OpenCode model. It has three searchable
+views:
+
+- **SOTA** contains the current native GPT and leading external models.
+- **OpenCode Go** contains every discovered Go model, including hidden older or
+  cheaper fallbacks.
+- **Free** contains only `big-pickle` and IDs ending in `-free`. Paid Zen models
+  are excluded before catalog merge.
+
+Favorites are stored only in macOS user defaults. After selecting a model, the
+app asks whether to save it for a new task or gracefully restart Codex. It never
+force-quits Codex and never changes a running task.
+
+Build or refresh the installed app with:
+
+```sh
+./bin/model-picker
+```
+
+The picker reads the router snapshot on every refresh, so newly discovered Go
+and Free models appear without an app update.
+
 Run it from a stable checkout on macOS:
 
 ```sh
