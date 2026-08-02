@@ -916,6 +916,73 @@ test("API forwarder isolates OpenCode Go credentials and preserves tool calls", 
   }
 });
 
+test("API forwarder removes empty Kimi text blocks without losing tool calls", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { choices: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    OPENCODE_GO_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    OPENCODE_GO_API_KEY: "TEST_OPENCODE_GO_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const toolCall = {
+      id: "call_A",
+      type: "function",
+      function: { name: "read_file", arguments: "{}" },
+    };
+    const response = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "opencode-go-kimi-k3",
+          messages: [
+            { role: "system", content: [{ type: "text", text: "" }] },
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "  " },
+                { type: "text", text: "Read package.json" },
+              ],
+            },
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "" }],
+              tool_calls: [toolCall],
+            },
+            { role: "tool", tool_call_id: "call_A", content: "" },
+          ],
+        }),
+      },
+    );
+    assert.equal(response.status, 200);
+    const messages = upstreamRequests[0].body.messages;
+    assert.equal(messages.length, 3);
+    assert.deepEqual(messages[0].content, [
+      { type: "text", text: "Read package.json" },
+    ]);
+    assert.equal(messages[1].content, null);
+    assert.deepEqual(messages[1].tool_calls, [toolCall]);
+    assert.equal(messages[2].content, "[no output]");
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
 test("API forwarder uses the OpenCode Go backup only after an auth failure", async () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "opencode-go-backup-"));
   writeFileSync(

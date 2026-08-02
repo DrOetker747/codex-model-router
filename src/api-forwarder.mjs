@@ -107,6 +107,45 @@ function coalesceAssistantMessages(messages) {
   return coalesced;
 }
 
+function nonEmptyTextBlock(block) {
+  if (!block || typeof block !== "object") return true;
+  if (!["text", "input_text", "output_text"].includes(block.type)) return true;
+  return typeof block.text === "string" && block.text.trim().length > 0;
+}
+
+// Some Codex histories contain empty text blocks around tool calls. OpenAI
+// accepts that shape, while stricter Chat Completions providers such as Kimi K3
+// reject the whole request with "text content is empty". Remove only empty
+// text blocks and empty no-op messages; preserve every semantic content block
+// and every tool call/result.
+function sanitizeChatMessages(messages) {
+  if (!Array.isArray(messages)) return messages;
+  const sanitized = [];
+  for (const original of messages) {
+    if (!original || typeof original !== "object") continue;
+    const message = { ...original };
+    if (Array.isArray(message.content)) {
+      message.content = message.content.filter(nonEmptyTextBlock);
+      if (message.content.length === 0) message.content = null;
+    } else if (typeof message.content === "string" && message.content.trim() === "") {
+      message.content = null;
+    }
+
+    const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
+    if (message.content === null || message.content === undefined) {
+      if (message.role === "assistant" && hasToolCalls) {
+        message.content = null;
+      } else if (message.role === "tool") {
+        message.content = "[no output]";
+      } else {
+        continue;
+      }
+    }
+    sanitized.push(message);
+  }
+  return sanitized;
+}
+
 function normalizeBody(buffer, contentType, route) {
   if (!buffer.length || !String(contentType || "").includes("application/json")) {
     const error = new Error("API-provider requests require a JSON body.");
@@ -140,7 +179,7 @@ function normalizeBody(buffer, contentType, route) {
 
   payload.model = model.upstreamModel;
   if (Array.isArray(payload.messages)) {
-    payload.messages = coalesceAssistantMessages(payload.messages);
+    payload.messages = sanitizeChatMessages(coalesceAssistantMessages(payload.messages));
   }
   if (model.requestProfile === "kimi-k3") {
     payload.reasoning_effort = "max";
