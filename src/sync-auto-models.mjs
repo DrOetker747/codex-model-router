@@ -2,7 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { discoverProviderModels } from "./model-discovery.mjs";
-import { MODELS, PROVIDERS } from "./model-registry.mjs";
+import { PROVIDERS, STATIC_MODELS } from "./model-registry.mjs";
 import { credentialStatus } from "./provider-credentials.mjs";
 import { readUserModels, userModelEntry, writeUserModels } from "./user-models.mjs";
 
@@ -44,7 +44,9 @@ export function mergeDiscoveredModels(providerId, discovered) {
     throw new Error(`Provider ${providerId} does not enable automatic model sync.`);
   }
   const registered = new Set(
-    MODELS.filter((model) => model.provider === providerId).map((model) => model.upstreamModel),
+    STATIC_MODELS.filter((model) => model.provider === providerId).map(
+      (model) => model.upstreamModel,
+    ),
   );
   const existing = readUserModels();
   const others = existing.filter(

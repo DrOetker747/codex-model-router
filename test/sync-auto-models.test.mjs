@@ -51,6 +51,24 @@ test("OpenCode Go catalog sync adds every new model with the correct protocol", 
     assert.equal(byId["gpt-5.6-luna"].protocol, "responses");
     assert.equal(byId["kimi-k3"], undefined);
 
+    const repeatedOutput = execFileSync(
+      process.execPath,
+      ["src/sync-auto-models.mjs", "opencode-go", "--fixture", fixture],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, MODEL_ROUTER_STATE_DIR: stateDir },
+      },
+    );
+    const repeatedResult = JSON.parse(repeatedOutput).results[0];
+    assert.equal(repeatedResult.changed, false);
+    assert.equal(repeatedResult.models, 4);
+    assert.equal(
+      JSON.parse(readFileSync(path.join(stateDir, "user-models.json"), "utf8"))
+        .models.length,
+      4,
+    );
+
     execFileSync(process.execPath, ["src/litellm-config.mjs"], {
       cwd: root,
       env: { ...process.env, MODEL_ROUTER_STATE_DIR: stateDir },

@@ -176,6 +176,7 @@ const registry = loadRegistry();
 const merged = mergeUserModels(registry);
 
 export const PROVIDERS = registry.providers;
+export const STATIC_MODELS = registry.models;
 export const MODELS = merged.models;
 export const USER_MODEL_WARNINGS = merged.warnings;
 export const LISTED_MODELS = Object.freeze(MODELS.filter((model) => model.listed));
