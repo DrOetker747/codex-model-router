@@ -1,9 +1,55 @@
 #import <Cocoa/Cocoa.h>
 
-static NSColor *Accent(void) { return [NSColor colorWithRed:0.36 green:0.66 blue:0.91 alpha:1]; }
-static NSColor *Mint(void) { return [NSColor colorWithRed:0.38 green:0.82 blue:0.61 alpha:1]; }
-static NSColor *Purple(void) { return [NSColor colorWithRed:0.71 green:0.48 blue:0.94 alpha:1]; }
+static NSColor *Accent(void) { return [NSColor colorWithSRGBRed:0.31 green:0.62 blue:1.0 alpha:1]; }
+static NSColor *Mint(void) { return [NSColor colorWithSRGBRed:0.22 green:0.82 blue:0.58 alpha:1]; }
+static NSColor *Purple(void) { return [NSColor colorWithSRGBRed:0.69 green:0.45 blue:0.98 alpha:1]; }
 static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
+static NSColor *Surface(void) { return [NSColor colorWithWhite:1 alpha:0.065]; }
+static NSColor *Hairline(void) { return [NSColor colorWithWhite:1 alpha:0.12]; }
+
+static NSBox *BadgePill(NSString *text, NSColor *color) {
+  NSBox *pill = [[NSBox alloc] init];
+  pill.boxType = NSBoxCustom;
+  pill.cornerRadius = 7;
+  pill.fillColor = [color colorWithAlphaComponent:0.12];
+  pill.borderColor = [color colorWithAlphaComponent:0.22];
+  pill.borderWidth = 0.5;
+  NSTextField *label = [NSTextField labelWithString:text];
+  label.font = [NSFont systemFontOfSize:8 weight:NSFontWeightBold];
+  label.textColor = color;
+  label.alignment = NSTextAlignmentCenter;
+  label.translatesAutoresizingMaskIntoConstraints = NO;
+  [pill addSubview:label];
+  [NSLayoutConstraint activateConstraints:@[
+    [label.leadingAnchor constraintEqualToAnchor:pill.leadingAnchor constant:7],
+    [label.trailingAnchor constraintEqualToAnchor:pill.trailingAnchor constant:-7],
+    [label.centerYAnchor constraintEqualToAnchor:pill.centerYAnchor],
+    [pill.heightAnchor constraintEqualToConstant:20],
+  ]];
+  return pill;
+}
+
+static NSBox *SymbolTile(NSString *symbol, NSColor *color, CGFloat size) {
+  NSBox *tile = [[NSBox alloc] init];
+  tile.boxType = NSBoxCustom;
+  tile.cornerRadius = size * 0.31;
+  tile.fillColor = [color colorWithAlphaComponent:0.16];
+  tile.borderColor = [color colorWithAlphaComponent:0.27];
+  tile.borderWidth = 0.5;
+  NSImageView *image = [[NSImageView alloc] init];
+  image.image = [NSImage imageWithSystemSymbolName:symbol accessibilityDescription:nil];
+  image.contentTintColor = color;
+  image.symbolConfiguration = [NSImageSymbolConfiguration configurationWithPointSize:size * 0.42 weight:NSFontWeightSemibold];
+  image.translatesAutoresizingMaskIntoConstraints = NO;
+  [tile addSubview:image];
+  [NSLayoutConstraint activateConstraints:@[
+    [tile.widthAnchor constraintEqualToConstant:size],
+    [tile.heightAnchor constraintEqualToConstant:size],
+    [image.centerXAnchor constraintEqualToAnchor:tile.centerXAnchor],
+    [image.centerYAnchor constraintEqualToAnchor:tile.centerYAnchor],
+  ]];
+  return tile;
+}
 
 @interface ModelButton : NSButton
 @property(nonatomic, strong) id payload;
@@ -46,35 +92,30 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
   NSStackView *content = [NSStackView stackViewWithViews:@[]];
   content.orientation = NSUserInterfaceLayoutOrientationVertical;
   content.alignment = NSLayoutAttributeLeading;
-  content.spacing = 12;
+  content.spacing = 13;
   content.translatesAutoresizingMaskIntoConstraints = NO;
   [root addSubview:content];
   [NSLayoutConstraint activateConstraints:@[
-    [content.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:16],
-    [content.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-16],
-    [content.topAnchor constraintEqualToAnchor:root.topAnchor constant:16],
+    [content.leadingAnchor constraintEqualToAnchor:root.leadingAnchor constant:18],
+    [content.trailingAnchor constraintEqualToAnchor:root.trailingAnchor constant:-18],
+    [content.topAnchor constraintEqualToAnchor:root.topAnchor constant:18],
     [content.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-14],
   ]];
 
   NSStackView *header = [NSStackView stackViewWithViews:@[]];
   header.orientation = NSUserInterfaceLayoutOrientationHorizontal;
   header.alignment = NSLayoutAttributeCenterY;
-  NSTextField *title = [self label:@"Model Router" size:16 weight:NSFontWeightSemibold color:NSColor.labelColor];
-  NSTextField *subtitle = [self label:@"Choose a model for your next Codex task" size:10 weight:NSFontWeightRegular color:Muted()];
+  header.spacing = 10;
+  [header addArrangedSubview:SymbolTile(@"sparkles", Accent(), 34)];
+  NSTextField *title = [self label:@"Model Router" size:18 weight:NSFontWeightBold color:NSColor.labelColor];
+  NSTextField *subtitle = [self label:@"Your best model, one click away" size:10 weight:NSFontWeightRegular color:Muted()];
   NSStackView *titles = [NSStackView stackViewWithViews:@[title, subtitle]];
   titles.orientation = NSUserInterfaceLayoutOrientationVertical;
   titles.alignment = NSLayoutAttributeLeading;
   titles.spacing = 2;
   [header addArrangedSubview:titles];
   [header addArrangedSubview:[self spacer]];
-  NSView *dot = [[NSView alloc] init];
-  dot.wantsLayer = YES;
-  dot.layer.backgroundColor = Mint().CGColor;
-  dot.layer.cornerRadius = 4;
-  [dot.widthAnchor constraintEqualToConstant:8].active = YES;
-  [dot.heightAnchor constraintEqualToConstant:8].active = YES;
-  [header addArrangedSubview:dot];
-  [header addArrangedSubview:[self label:@"Online" size:10 weight:NSFontWeightMedium color:Muted()]];
+  [header addArrangedSubview:BadgePill(@"ONLINE", Mint())];
   NSButton *settings = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"gearshape" accessibilityDescription:@"Provider settings"] target:self action:@selector(openProviderSettings:)];
   settings.bezelStyle = NSBezelStyleInline;
   settings.toolTip = @"Provider settings";
@@ -84,26 +125,34 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
 
   NSBox *currentCard = [[NSBox alloc] init];
   currentCard.boxType = NSBoxCustom;
-  currentCard.cornerRadius = 12;
-  currentCard.fillColor = [NSColor colorWithWhite:1 alpha:0.055];
-  currentCard.borderColor = [NSColor colorWithWhite:1 alpha:0.08];
-  currentCard.borderWidth = 0.5;
+  currentCard.cornerRadius = 14;
+  currentCard.fillColor = Surface();
+  currentCard.borderColor = Hairline();
+  currentCard.borderWidth = 0.75;
   NSStackView *current = [NSStackView stackViewWithViews:@[]];
-  current.orientation = NSUserInterfaceLayoutOrientationVertical;
-  current.alignment = NSLayoutAttributeLeading;
-  current.spacing = 3;
+  current.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  current.alignment = NSLayoutAttributeCenterY;
+  current.spacing = 11;
   current.translatesAutoresizingMaskIntoConstraints = NO;
   [currentCard addSubview:current];
   [NSLayoutConstraint activateConstraints:@[
-    [current.leadingAnchor constraintEqualToAnchor:currentCard.leadingAnchor constant:12],
-    [current.trailingAnchor constraintEqualToAnchor:currentCard.trailingAnchor constant:-12],
+    [current.leadingAnchor constraintEqualToAnchor:currentCard.leadingAnchor constant:13],
+    [current.trailingAnchor constraintEqualToAnchor:currentCard.trailingAnchor constant:-13],
     [current.centerYAnchor constraintEqualToAnchor:currentCard.centerYAnchor],
   ]];
-  [current addArrangedSubview:[self label:@"CURRENT MODEL" size:8 weight:NSFontWeightBold color:Muted()]];
-  self.currentModelLabel = [self label:@"Loading…" size:14 weight:NSFontWeightSemibold color:NSColor.labelColor];
+  [current addArrangedSubview:SymbolTile(@"bolt.fill", Purple(), 32)];
+  NSTextField *eyebrow = [self label:@"ACTIVE FOR NEW TASKS" size:8 weight:NSFontWeightBold color:Muted()];
+  self.currentModelLabel = [self label:@"Loading…" size:15 weight:NSFontWeightSemibold color:NSColor.labelColor];
   self.currentModelLabel.lineBreakMode = NSLineBreakByTruncatingTail;
-  [current addArrangedSubview:self.currentModelLabel];
-  [currentCard.heightAnchor constraintEqualToConstant:58].active = YES;
+  NSStackView *currentLabels = [NSStackView stackViewWithViews:@[eyebrow, self.currentModelLabel]];
+  currentLabels.orientation = NSUserInterfaceLayoutOrientationVertical;
+  currentLabels.alignment = NSLayoutAttributeLeading;
+  currentLabels.spacing = 3;
+  [current addArrangedSubview:currentLabels];
+  [currentLabels setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [current addArrangedSubview:[self spacer]];
+  [current addArrangedSubview:BadgePill(@"READY", Accent())];
+  [currentCard.heightAnchor constraintEqualToConstant:68].active = YES;
   [content addArrangedSubview:currentCard];
   [currentCard.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
 
@@ -111,14 +160,14 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
   self.searchField.placeholderString = @"Search models";
   self.searchField.delegate = self;
   self.searchField.controlSize = NSControlSizeRegular;
-  [self.searchField.heightAnchor constraintEqualToConstant:30].active = YES;
+  [self.searchField.heightAnchor constraintEqualToConstant:32].active = YES;
   [content addArrangedSubview:self.searchField];
   [self.searchField.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
 
   self.tabs = [NSSegmentedControl segmentedControlWithLabels:@[@"SOTA", @"OpenCode Go", @"Free"]
     trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(tabChanged:)];
   self.tabs.selectedSegment = 0;
-  self.tabs.segmentStyle = NSSegmentStyleTexturedRounded;
+  self.tabs.segmentStyle = NSSegmentStyleTexturedSquare;
   [content addArrangedSubview:self.tabs];
   [self.tabs.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
 
@@ -129,7 +178,7 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
   self.modelStack = [NSStackView stackViewWithViews:@[]];
   self.modelStack.orientation = NSUserInterfaceLayoutOrientationVertical;
   self.modelStack.alignment = NSLayoutAttributeLeading;
-  self.modelStack.spacing = 4;
+  self.modelStack.spacing = 6;
   self.modelStack.edgeInsets = NSEdgeInsetsMake(2, 0, 4, 5);
   self.modelStack.translatesAutoresizingMaskIntoConstraints = NO;
   scroll.documentView = self.modelStack;
@@ -338,25 +387,26 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
   BOOL selected = [slug isEqual:[self selectedSlug]] || [slug isEqual:self.target[@"selectedModel"]];
   NSBox *box = [[NSBox alloc] init];
   box.boxType = NSBoxCustom;
-  box.cornerRadius = 9;
-  box.fillColor = selected ? [Accent() colorWithAlphaComponent:0.13] : NSColor.clearColor;
-  box.borderWidth = 0;
-  [box.heightAnchor constraintEqualToConstant:44].active = YES;
+  box.cornerRadius = 11;
+  box.fillColor = selected ? [Accent() colorWithAlphaComponent:0.12] : [NSColor colorWithWhite:1 alpha:0.022];
+  box.borderColor = selected ? [Accent() colorWithAlphaComponent:0.38] : [NSColor colorWithWhite:1 alpha:0.055];
+  box.borderWidth = selected ? 0.9 : 0.5;
+  [box.heightAnchor constraintEqualToConstant:48].active = YES;
   NSStackView *row = [NSStackView stackViewWithViews:@[]];
   row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
   row.alignment = NSLayoutAttributeCenterY;
-  row.spacing = 9;
+  row.spacing = 8;
   row.translatesAutoresizingMaskIntoConstraints = NO;
   [box addSubview:row];
   [NSLayoutConstraint activateConstraints:@[
-    [row.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:8],
-    [row.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-8],
+    [row.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:10],
+    [row.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-9],
     [row.centerYAnchor constraintEqualToAnchor:box.centerYAnchor],
   ]];
   ModelButton *choose = [ModelButton buttonWithTitle:model[@"displayName"] ?: slug target:self action:@selector(modelClicked:)];
   choose.payload = model;
   choose.bezelStyle = NSBezelStyleInline;
-  choose.font = [NSFont systemFontOfSize:11 weight:selected ? NSFontWeightSemibold : NSFontWeightMedium];
+  choose.font = [NSFont systemFontOfSize:12 weight:selected ? NSFontWeightSemibold : NSFontWeightMedium];
   choose.alignment = NSTextAlignmentLeft;
   choose.lineBreakMode = NSLineBreakByTruncatingTail;
   choose.toolTip = slug;
@@ -365,8 +415,8 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
   [row addArrangedSubview:[self spacer]];
   NSString *provider = model[@"provider"] ?: @"";
   NSString *badge = [self badgeForProvider:provider];
-  NSTextField *badgeLabel = [self label:badge size:8 weight:NSFontWeightBold color:[provider isEqual:@"opencode-free"] ? Mint() : [provider isEqual:@"openai"] ? Accent() : Purple()];
-  [row addArrangedSubview:badgeLabel];
+  NSColor *badgeColor = [provider isEqual:@"opencode-free"] ? Mint() : [provider isEqual:@"openai"] ? Accent() : Purple();
+  [row addArrangedSubview:BadgePill(badge, badgeColor)];
   ModelButton *star = [ModelButton buttonWithImage:[NSImage imageWithSystemSymbolName:[self.favorites containsObject:slug] ? @"star.fill" : @"star" accessibilityDescription:@"Favorite"] target:self action:@selector(favoriteClicked:)];
   star.payload = slug;
   star.bezelStyle = NSBezelStyleInline;
@@ -479,10 +529,10 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
 @implementation ProviderSettingsWindowController
 
 - (instancetype)initWithSourceRoot:(NSString *)sourceRoot {
-  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 520, 620)
+  NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 540, 650)
     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
     backing:NSBackingStoreBuffered defer:NO];
-  window.title = @"Model Router · Providers";
+  window.title = @"Model Router · Connections";
   window.minSize = NSMakeSize(480, 500);
   if ((self = [super initWithWindow:window])) {
     self.sourceRoot = sourceRoot;
@@ -515,7 +565,7 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
   NSStackView *content = [NSStackView stackViewWithViews:@[]];
   content.orientation = NSUserInterfaceLayoutOrientationVertical;
   content.alignment = NSLayoutAttributeLeading;
-  content.spacing = 12;
+  content.spacing = 14;
   content.translatesAutoresizingMaskIntoConstraints = NO;
   [root addSubview:content];
   [NSLayoutConstraint activateConstraints:@[
@@ -525,14 +575,30 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
     [content.bottomAnchor constraintEqualToAnchor:root.bottomAnchor constant:-16],
   ]];
 
-  [content addArrangedSubview:[self label:@"Providers" size:20 weight:NSFontWeightSemibold color:NSColor.labelColor]];
-  NSTextField *intro = [self label:@"Only connected and enabled providers can appear in SOTA. Keys are sent directly to the protected router store." size:10 weight:NSFontWeightRegular color:Muted()];
+  NSStackView *header = [NSStackView stackViewWithViews:@[]];
+  header.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+  header.alignment = NSLayoutAttributeCenterY;
+  header.spacing = 11;
+  [header addArrangedSubview:SymbolTile(@"point.3.connected.trianglepath.dotted", Purple(), 38)];
+  NSTextField *title = [self label:@"Connections" size:21 weight:NSFontWeightBold color:NSColor.labelColor];
+  NSTextField *kicker = [self label:@"Control what appears in SOTA" size:10 weight:NSFontWeightRegular color:Muted()];
+  NSStackView *headerLabels = [NSStackView stackViewWithViews:@[title, kicker]];
+  headerLabels.orientation = NSUserInterfaceLayoutOrientationVertical;
+  headerLabels.alignment = NSLayoutAttributeLeading;
+  headerLabels.spacing = 2;
+  [header addArrangedSubview:headerLabels];
+  [header addArrangedSubview:[self spacer]];
+  [header addArrangedSubview:BadgePill(@"SECURE", Mint())];
+  [content addArrangedSubview:header];
+  [header.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
+  NSTextField *intro = [self label:@"Only connected and enabled providers appear in SOTA. API keys stay in the router's protected local store." size:10 weight:NSFontWeightRegular color:Muted()];
   intro.maximumNumberOfLines = 2;
   [content addArrangedSubview:intro];
   [intro.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
   self.searchField = [[NSSearchField alloc] init];
   self.searchField.placeholderString = @"Search providers";
   self.searchField.delegate = self;
+  [self.searchField.heightAnchor constraintEqualToConstant:32].active = YES;
   [content addArrangedSubview:self.searchField];
   [self.searchField.widthAnchor constraintEqualToAnchor:content.widthAnchor].active = YES;
 
@@ -543,7 +609,7 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
   self.providerStack = [NSStackView stackViewWithViews:@[]];
   self.providerStack.orientation = NSUserInterfaceLayoutOrientationVertical;
   self.providerStack.alignment = NSLayoutAttributeLeading;
-  self.providerStack.spacing = 7;
+  self.providerStack.spacing = 8;
   self.providerStack.edgeInsets = NSEdgeInsetsMake(2, 0, 6, 6);
   self.providerStack.translatesAutoresizingMaskIntoConstraints = NO;
   scroll.documentView = self.providerStack;
@@ -656,11 +722,11 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
   BOOL enabled = [self.target[@"enabledProviders"] containsObject:providerID];
   NSBox *box = [[NSBox alloc] init];
   box.boxType = NSBoxCustom;
-  box.cornerRadius = 10;
-  box.fillColor = [NSColor colorWithWhite:1 alpha:0.045];
-  box.borderColor = [NSColor colorWithWhite:1 alpha:0.07];
-  box.borderWidth = 0.5;
-  [box.heightAnchor constraintEqualToConstant:56].active = YES;
+  box.cornerRadius = 12;
+  box.fillColor = configured ? [Mint() colorWithAlphaComponent:0.055] : [NSColor colorWithWhite:1 alpha:0.035];
+  box.borderColor = configured ? [Mint() colorWithAlphaComponent:0.18] : Hairline();
+  box.borderWidth = 0.6;
+  [box.heightAnchor constraintEqualToConstant:62].active = YES;
   NSStackView *row = [NSStackView stackViewWithViews:@[]];
   row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
   row.alignment = NSLayoutAttributeCenterY;
@@ -668,14 +734,14 @@ static NSColor *Muted(void) { return [NSColor secondaryLabelColor]; }
   row.translatesAutoresizingMaskIntoConstraints = NO;
   [box addSubview:row];
   [NSLayoutConstraint activateConstraints:@[
-    [row.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:11],
-    [row.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-11],
+    [row.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:12],
+    [row.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-12],
     [row.centerYAnchor constraintEqualToAnchor:box.centerYAnchor],
   ]];
   NSString *detail = configured ? (enabled ? @"Connected · shown in SOTA when eligible" : @"Connected · hidden from SOTA")
     : [provider[@"kind"] isEqual:@"oauth"] ? @"Sign-in required" : @"API key required";
   NSStackView *labels = [NSStackView stackViewWithViews:@[
-    [self label:provider[@"displayName"] ?: providerID size:12 weight:NSFontWeightMedium color:NSColor.labelColor],
+    [self label:provider[@"displayName"] ?: providerID size:12.5 weight:NSFontWeightSemibold color:NSColor.labelColor],
     [self label:detail size:9 weight:NSFontWeightRegular color:configured ? Muted() : NSColor.systemOrangeColor],
   ]];
   labels.orientation = NSUserInterfaceLayoutOrientationVertical;
