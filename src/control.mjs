@@ -361,22 +361,72 @@ async function setLoginFreeMode(desired) {
   process.stdout.write(result.stdout);
 }
 
-async function setLoginFreeModel(slug) {
+async function setCodexModel(slug) {
   const value = String(slug || "").trim();
   if (!value) throw new Error("Usage: control model-set <model-slug>");
   const config = codexConfigSnapshot();
-  if (!config?.login_free) {
-    throw new Error("Switching the tray model requires login-free mode.");
+  const { NATIVE_CATALOG_PATH } = await import("./paths.mjs");
+  const { MODEL_BY_SLUG, PROVIDERS } = await import("./model-registry.mjs");
+  const {
+    readProviderSelection,
+    writeProviderSelection,
+  } = await import("./provider-selection.mjs");
+  const { credentialStatus } = await import("./provider-credentials.mjs");
+  const route = MODEL_BY_SLUG.get(value);
+  const nativeModels = nativeCodexModels(NATIVE_CATALOG_PATH);
+  const native = nativeModels.some((model) => model.slug === value);
+  if (!route && !native) throw new Error(`Unknown Codex model: ${value}`);
+  if (native && config?.login_free) {
+    throw new Error("Native GPT models are unavailable while login-free mode is active.");
   }
-  const { selectedConfiguredListedModels } = await import("./provider-selection.mjs");
-  if (!selectedConfiguredListedModels().some((model) => model.slug === value)) {
-    throw new Error(`${value} is not an enabled, authenticated external model.`);
+
+  let previousProviders;
+  if (route) {
+    const provider = PROVIDERS.get(route.provider);
+    if (!credentialStatus(provider, { persistent: true }).configured) {
+      throw new Error(`${value} is not an authenticated external model.`);
+    }
+    const current = readProviderSelection();
+    if (!current.includes(route.provider)) {
+      previousProviders = current;
+      writeProviderSelection([...current, route.provider]);
+    }
   }
-  const { nativeAliasFor } = await import("./native-alias.mjs");
-  const configModel = nativeAliasFor(value) || value;
+
+  const rollback = () => {
+    if (!previousProviders) return;
+    writeProviderSelection(previousProviders);
+    spawnSync(process.execPath, [path.join(REPO_ROOT, "src", "catalog.mjs")], {
+      cwd: REPO_ROOT,
+      env: { ...process.env, MODEL_ROUTER_TARGET: "codex" },
+      stdio: "ignore",
+    });
+  };
+
+  if (route) {
+    const catalog = spawnSync(
+      process.execPath,
+      [path.join(REPO_ROOT, "src", "catalog.mjs")],
+      {
+        cwd: REPO_ROOT,
+        env: { ...process.env, MODEL_ROUTER_TARGET: "codex" },
+        encoding: "utf8",
+      },
+    );
+    if (catalog.status !== 0) {
+      rollback();
+      throw new Error((catalog.stderr || "Codex model catalog could not be refreshed.").trim());
+    }
+  }
+
+  let configModel = value;
+  if (route && config?.login_free) {
+    const { nativeAliasFor } = await import("./native-alias.mjs");
+    configModel = nativeAliasFor(value) || value;
+  }
   const result = spawnSync(
     process.execPath,
-    [path.join(REPO_ROOT, "src", "config-manager.mjs"), "login-free-enable", configModel],
+    [path.join(REPO_ROOT, "src", "config-manager.mjs"), "model-set", configModel],
     {
       cwd: REPO_ROOT,
       env: { ...process.env, MODEL_ROUTER_TARGET: "codex" },
@@ -384,6 +434,7 @@ async function setLoginFreeModel(slug) {
     },
   );
   if (result.status !== 0) {
+    rollback();
     throw new Error((result.stderr || "The Codex model could not be changed.").trim());
   }
   process.stdout.write(result.stdout);
@@ -423,7 +474,7 @@ if (args.includes("--probe")) {
 } else if (args[0] === "auth-mode") {
   await setLoginFreeMode(args[1]);
 } else if (args[0] === "model-set") {
-  await setLoginFreeModel(args[1]);
+  await setCodexModel(args[1]);
 } else if (args[0] === "maintenance") {
   await updateAndVerifyCodex();
 } else {

@@ -378,9 +378,9 @@ function atomicWrite(contents) {
   }
 }
 
-if (!new Set(["enable", "disable", "status", "login-free-enable", "login-free-disable"]).has(command)) {
+if (!new Set(["enable", "disable", "status", "model-set", "login-free-enable", "login-free-disable"]).has(command)) {
   console.error(
-    "Usage: config-manager.mjs enable|disable|status|login-free-enable|login-free-disable",
+    "Usage: config-manager.mjs enable|disable|status|model-set MODEL|login-free-enable|login-free-disable",
   );
   process.exit(2);
 }
@@ -395,6 +395,10 @@ let next;
 let pendingProviderModeState;
 if (command === "enable") {
   next = enabledContents(current);
+} else if (command === "model-set") {
+  const model = String(process.argv[3] || "").trim();
+  if (!model) throw new Error("A model slug is required.");
+  next = `${replaceRootValue(current, "model", model)}\n`;
 } else if (command === "login-free-enable") {
   const enabled = enabledContents(current);
   const { rootLines } = splitRoot(current);

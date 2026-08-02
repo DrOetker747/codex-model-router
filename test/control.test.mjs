@@ -316,7 +316,7 @@ test("login-free aliasing applies even when a ChatGPT credential is still stored
   }
 });
 
-test("model-set switches the login-free model and rejects unavailable models", () => {
+test("model-set safely selects authenticated, native, and login-free models", () => {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-model-set-"));
   writeFileSync(path.join(stateDir, "config.toml"), `model = "gpt-5.6-sol"\n`, {
     mode: 0o600,
@@ -368,11 +368,20 @@ test("model-set switches the login-free model and rejects unavailable models", (
     );
 
   try {
-    assert.throws(
-      () => runControl("model-set", "deepseek/deepseek-v4-flash"),
-      /login-free/,
-      "model-set must require login-free mode",
+    execFileSync(
+      process.execPath,
+      [path.join(root, "src", "config-manager.mjs"), "enable"],
+      { cwd: root, encoding: "utf8", env: environment },
     );
+
+    const authenticated = runControl("model-set", "deepseek/deepseek-v4-pro");
+    assert.equal(authenticated.model, "deepseek/deepseek-v4-pro");
+    assert.equal(authenticated.model_provider, "openai");
+    assert.equal(authenticated.login_free, false);
+
+    const native = runControl("model-set", "gpt-5.6-sol");
+    assert.equal(native.model, "gpt-5.6-sol");
+    assert.equal(native.model_provider, "openai");
 
     runControl("auth-mode", "on");
     const switched = runControl("model-set", "deepseek/deepseek-v4-flash");
@@ -385,13 +394,13 @@ test("model-set switches the login-free model and rejects unavailable models", (
 
     assert.throws(
       () => runControl("model-set", "kimi-api/kimi-k3"),
-      /enabled, authenticated/,
+      /authenticated/,
       "model-set must reject models from unauthenticated providers",
     );
     assert.throws(
       () => runControl("model-set", "gpt-5.6-sol"),
-      /enabled, authenticated/,
-      "model-set must reject native models",
+      /unavailable while login-free/,
+      "model-set must reject native models in login-free mode",
     );
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
