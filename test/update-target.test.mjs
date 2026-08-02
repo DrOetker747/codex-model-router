@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   currentCheckoutInstaller,
   installationNeedsRefresh,
+  updateStrategy,
 } from "../src/update.mjs";
 
 test("checkout updates preserve the selected app target on every platform", () => {
@@ -29,4 +30,11 @@ test("an update reinstalls a revision pulled outside the updater", () => {
     installationNeedsRefresh({ current: { commit: "new-revision" } }, "new-revision"),
     false,
   );
+});
+
+test("updates preserve a clean local provider extension", () => {
+  assert.equal(updateStrategy(0, 0), "current");
+  assert.equal(updateStrategy(2, 0), "current");
+  assert.equal(updateStrategy(0, 3), "fast-forward");
+  assert.equal(updateStrategy(2, 3), "rebase");
 });

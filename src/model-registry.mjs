@@ -95,6 +95,12 @@ function modelProblem(model, providers, slugs, gatewayModels) {
   if (model.requestProfile !== undefined && typeof model.requestProfile !== "string") {
     return `model ${model.slug} has an invalid requestProfile`;
   }
+  if (
+    model.protocol !== undefined &&
+    !["openai", "anthropic", "responses"].includes(model.protocol)
+  ) {
+    return `model ${model.slug} has an unsupported API protocol`;
+  }
   if (slugs.has(model.slug)) return `duplicate model slug ${model.slug}`;
   if (gatewayModels.has(model.gatewayModel)) {
     return `duplicate gateway model ${model.gatewayModel}`;
@@ -183,4 +189,8 @@ export const MODEL_BY_GATEWAY_ID = new Map(
 
 export function providerForModel(model) {
   return PROVIDERS.get(model.provider);
+}
+
+export function protocolForModel(model) {
+  return model.protocol || providerForModel(model)?.protocol || "openai";
 }

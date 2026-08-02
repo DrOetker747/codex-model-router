@@ -18,6 +18,7 @@ test("provider registry exposes configured API and OAuth model families", () => 
       "kimi-oauth/kimi-for-coding-highspeed",
       "kimi-oauth/k3",
       "kimi-api/kimi-k3",
+      "opencode-go/kimi-k3",
       "deepseek/deepseek-v4-flash",
       "deepseek/deepseek-v4-pro",
       "grok-oauth/grok-4.5",
@@ -35,6 +36,14 @@ test("provider registry exposes configured API and OAuth model families", () => 
     ],
   );
   assert.equal(PROVIDERS.get("deepseek").baseUrl, "https://api.deepseek.com");
+  assert.equal(
+    PROVIDERS.get("opencode-go").baseUrl,
+    "https://opencode.ai/zen/go/v1",
+  );
+  assert.equal(
+    PROVIDERS.get("opencode-go").credential.file,
+    "opencode-go-api-key.secret",
+  );
   assert.equal(
     PROVIDERS.get("qwen-plan").baseUrl,
     "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
@@ -62,6 +71,10 @@ test("provider registry exposes configured API and OAuth model families", () => 
   assert.equal(minimax.contextWindow, 1_000_000);
   assert.equal(minimax.autoCompact, 900_000);
   assert.deepEqual(minimax.inputModalities, ["text", "image"]);
+  const openCodeGoKimi = MODEL_BY_SLUG.get("opencode-go/kimi-k3");
+  assert.equal(openCodeGoKimi.upstreamModel, "kimi-k3");
+  assert.equal(openCodeGoKimi.contextWindow, 1_048_576);
+  assert.deepEqual(openCodeGoKimi.inputModalities, ["text", "image"]);
   assert.deepEqual(
     MODEL_BY_SLUG.get("anthropic-api/claude-opus-4.8").reasoningLevels,
     [{ effort: "high", description: "Adaptive deep reasoning for agentic work" }],

@@ -22,7 +22,16 @@ function gatewaySafe(value) {
     .replace(/^-|-$/g, "");
 }
 
-export function userModelEntry({ providerId, upstreamId, requestProfile, priority }) {
+export function userModelEntry({
+  providerId,
+  upstreamId,
+  requestProfile,
+  priority,
+  protocol,
+  displayName,
+  description,
+  autoDiscovered,
+}) {
   const gatewayModel = `${gatewaySafe(providerId)}-${gatewaySafe(upstreamId)}`;
   const entry = {
     slug: `${providerId}/${upstreamId}`,
@@ -30,8 +39,10 @@ export function userModelEntry({ providerId, upstreamId, requestProfile, priorit
     upstreamModel: upstreamId,
     provider: providerId,
     listed: true,
-    displayName: `${upstreamId} (curated)`,
-    description: `User-curated ${providerId} model; conservative default metadata that can be edited in the user model file.`,
+    displayName: displayName || `${upstreamId} (curated)`,
+    description:
+      description ||
+      `User-curated ${providerId} model; conservative default metadata that can be edited in the user model file.`,
     priority,
     defaultEffort: "high",
     reasoningLevels: [{ effort: "high", description: "Adaptive reasoning" }],
@@ -41,6 +52,8 @@ export function userModelEntry({ providerId, upstreamId, requestProfile, priorit
     compHash: `${gatewayModel}-user-v1`,
   };
   if (requestProfile) entry.requestProfile = requestProfile;
+  if (protocol) entry.protocol = protocol;
+  if (autoDiscovered) entry.autoDiscovered = autoDiscovered;
   return entry;
 }
 

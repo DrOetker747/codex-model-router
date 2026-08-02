@@ -13,6 +13,7 @@ import {
   API_MODELS,
   MODEL_BY_GATEWAY_ID,
   PROVIDERS,
+  protocolForModel,
   providerForModel,
 } from "./model-registry.mjs";
 import { parseRateLimitHeaders } from "./rate-limit-headers.mjs";
@@ -125,7 +126,12 @@ function normalizeBody(buffer, contentType, route) {
     error.status = 400;
     throw error;
   }
-  const expectedRoute = provider.protocol === "anthropic" ? "/messages" : "/chat/completions";
+  const protocol = protocolForModel(model);
+  const expectedRoute = protocol === "anthropic"
+    ? "/messages"
+    : protocol === "responses"
+      ? "/responses"
+      : "/chat/completions";
   if (route !== expectedRoute) {
     const error = new Error(`Model ${model.gatewayModel} does not support ${route}.`);
     error.status = 400;
@@ -194,10 +200,10 @@ function normalizeBody(buffer, contentType, route) {
     delete payload.reasoning_effort;
     payload.thinking = { type: "adaptive" };
   }
-  return { body: Buffer.from(JSON.stringify(payload), "utf8"), model, provider };
+  return { body: Buffer.from(JSON.stringify(payload), "utf8"), model, provider, protocol };
 }
 
-function upstreamHeaders(requestHeaders, body, apiKey, provider) {
+function upstreamHeaders(requestHeaders, body, apiKey, protocol) {
   const headers = {};
   for (const [name, value] of Object.entries(requestHeaders)) {
     const lower = name.toLowerCase();
@@ -209,7 +215,7 @@ function upstreamHeaders(requestHeaders, body, apiKey, provider) {
     }
     if (value !== undefined) headers[name] = Array.isArray(value) ? value.join(", ") : value;
   }
-  if (provider.protocol === "anthropic") {
+  if (protocol === "anthropic") {
     headers["x-api-key"] = apiKey;
     headers["anthropic-version"] ||= "2023-06-01";
   } else {
@@ -265,7 +271,10 @@ async function handleRequest(request, response) {
     localModels(response);
     return;
   }
-  if (request.method !== "POST" || !["/chat/completions", "/messages"].includes(route)) {
+  if (
+    request.method !== "POST" ||
+    !["/chat/completions", "/messages", "/responses"].includes(route)
+  ) {
     writeJson(response, 404, {
       error: { type: "proxy_route_not_found", message: "Unsupported API-provider route." },
     });
@@ -295,7 +304,12 @@ async function handleRequest(request, response) {
   const target = `${providerBaseUrl(normalized.provider)}${route}${requestUrl.search}`;
   const upstream = await fetch(target, {
     method: request.method,
-    headers: upstreamHeaders(request.headers, normalized.body, credential.value, normalized.provider),
+    headers: upstreamHeaders(
+      request.headers,
+      normalized.body,
+      credential.value,
+      normalized.protocol,
+    ),
     body: normalized.body,
     signal: controller.signal,
   });

@@ -29,7 +29,7 @@ user.
 3. Never ask the user to paste OAuth tokens or API keys into chat, command
    arguments, logs, environment snippets, or tracked files.
 4. Determine which provider IDs the user requested: `anthropic-api`,
-   `kimi-oauth`, `kimi-api`, `deepseek`, `grok-api`, `qwen-plan`,
+   `kimi-oauth`, `kimi-api`, `opencode-go`, `deepseek`, `grok-api`, `qwen-plan`,
    `zai-coding`, `ollama-cloud`, and/or `minimax-token-plan`. The
    catalog-only providers `groq`, `openrouter`, `together`, `fireworks`,
    `cerebras`, `mistral`, `nvidia-nim`, `siliconflow`, `huggingface`, and

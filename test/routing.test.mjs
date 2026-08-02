@@ -850,6 +850,169 @@ test("API forwarder replaces caller auth and enforces Kimi K3 API parameters", a
   }
 });
 
+test("API forwarder isolates OpenCode Go credentials and preserves tool calls", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { choices: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    OPENCODE_GO_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    OPENCODE_GO_API_KEY: "TEST_OPENCODE_GO_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const tools = [
+      {
+        type: "function",
+        function: {
+          name: "read_file",
+          description: "Read a file",
+          parameters: {
+            type: "object",
+            properties: { path: { type: "string" } },
+            required: ["path"],
+          },
+        },
+      },
+    ];
+    const response = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "ChatGPT-Account-Id": "must-not-forward",
+          "X-Codex-Installation-Id": "must-not-forward",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "opencode-go-kimi-k3",
+          reasoning_effort: "low",
+          messages: [{ role: "user", content: "Read package.json" }],
+          tools,
+          tool_choice: "auto",
+        }),
+      },
+    );
+    assert.equal(response.status, 200);
+    const request = upstreamRequests[0];
+    assert.equal(request.headers.authorization, "Bearer TEST_OPENCODE_GO_API_KEY");
+    assert.equal(request.headers["chatgpt-account-id"], undefined);
+    assert.equal(request.headers["x-codex-installation-id"], undefined);
+    assert.equal(request.body.model, "kimi-k3");
+    assert.equal(request.body.reasoning_effort, "max");
+    assert.deepEqual(request.body.tools, tools);
+    assert.equal(request.body.tool_choice, "auto");
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
+test("API forwarder routes OpenCode Go Anthropic and Responses models per model", async () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "opencode-go-protocols-"));
+  writeFileSync(
+    path.join(testRoot, "user-models.json"),
+    `${JSON.stringify({
+      version: 1,
+      models: [
+        {
+          slug: "opencode-go/qwen-test",
+          gatewayModel: "opencode-go-qwen-test",
+          upstreamModel: "qwen-test",
+          provider: "opencode-go",
+          listed: false,
+          protocol: "anthropic",
+        },
+        {
+          slug: "opencode-go/gpt-test",
+          gatewayModel: "opencode-go-gpt-test",
+          upstreamModel: "gpt-test",
+          provider: "opencode-go",
+          listed: false,
+          protocol: "responses",
+        },
+      ],
+    })}\n`,
+    { mode: 0o600 },
+  );
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({
+      url: request.url,
+      headers: request.headers,
+      body: await bodyJson(request),
+    });
+    json(response, 200, { output: [], content: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    MODEL_ROUTER_STATE_DIR: testRoot,
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    OPENCODE_GO_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    OPENCODE_GO_API_KEY: "TEST_OPENCODE_GO_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const anthropic = await fetch(`http://127.0.0.1:${forwarderPort}/messages`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "opencode-go-qwen-test",
+        messages: [{ role: "user", content: "test" }],
+        tools: [{ name: "read_file", input_schema: { type: "object" } }],
+      }),
+    });
+    assert.equal(anthropic.status, 200);
+
+    const responses = await fetch(`http://127.0.0.1:${forwarderPort}/v1/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${INTERNAL_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "opencode-go-gpt-test",
+        input: "test",
+        tools: [{ type: "function", name: "read_file", parameters: { type: "object" } }],
+      }),
+    });
+    assert.equal(responses.status, 200);
+
+    assert.equal(upstreamRequests[0].url, "/v1/messages");
+    assert.equal(upstreamRequests[0].headers["x-api-key"], "TEST_OPENCODE_GO_API_KEY");
+    assert.equal(upstreamRequests[0].headers.authorization, undefined);
+    assert.equal(upstreamRequests[0].body.model, "qwen-test");
+    assert.equal(upstreamRequests[0].body.tools[0].name, "read_file");
+
+    assert.equal(upstreamRequests[1].url, "/v1/responses");
+    assert.equal(
+      upstreamRequests[1].headers.authorization,
+      "Bearer TEST_OPENCODE_GO_API_KEY",
+    );
+    assert.equal(upstreamRequests[1].body.model, "gpt-test");
+    assert.equal(upstreamRequests[1].body.tools[0].name, "read_file");
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});
+
 test("API forwarder health omits disabled API providers", async () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "api-forwarder-health-"));
   writeFileSync(

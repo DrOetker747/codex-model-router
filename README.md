@@ -74,6 +74,7 @@ Linux installations support the Codex CLI and the Cursor target's local gateway.
 | K2.7 Coding (OAuth) | `kimi-oauth/kimi-for-coding` | Existing Kimi Code CLI OAuth session |
 | Kimi K3 (OAuth) | `kimi-oauth/k3` | Existing Kimi Code CLI OAuth session |
 | Kimi K3 (API) | `kimi-api/kimi-k3` | Separately billed Kimi Platform API key |
+| Kimi K3 (OpenCode Go) | `opencode-go/kimi-k3` | OpenCode Go API key and subscription |
 | DeepSeek V4 Flash (API) | `deepseek/deepseek-v4-flash` | DeepSeek API key |
 | DeepSeek V4 Pro (API) | `deepseek/deepseek-v4-pro` | DeepSeek API key |
 | Grok 4.5 (OAuth) | `grok-oauth/grok-4.5` | Official Grok CLI OAuth session |
@@ -108,9 +109,19 @@ grok login --oauth
 Native GPT models continue to use Codex directly. There is no separate GPT or
 ChatGPT OAuth provider in the router.
 
-Kimi Code OAuth and Kimi Platform API access are separate authentication and
-billing systems. The two Kimi entries intentionally coexist. Older DeepSeek
+Kimi Code OAuth, Kimi Platform API, and OpenCode Go are separate authentication
+and billing systems. Their Kimi entries intentionally coexist. Older DeepSeek
 aliases remain hidden compatibility routes and are not advertised to new users.
+
+OpenCode Go reads its full model list from the provider's read-only `/models`
+catalog during installation and update. Newly published models are stored in
+protected local state, survive source updates, and use the provider's documented
+OpenAI, Anthropic, or Responses route by model family. Run the normal update
+command to load new entries into the picker:
+
+```sh
+./bin/model-router codex update
+```
 
 
 
@@ -395,7 +406,9 @@ For a managed Git checkout:
 
 Updates require a clean `main` checkout and a recognized repository origin.
 The previous revision is retained as a local rollback ref, and a failed install
-restores the previous source revision. If you already ran `git pull` manually,
+restores the previous source revision. A clean local provider extension is
+rebased onto a newer upstream revision; a conflict stops safely before install
+and leaves the previous source active. If you already ran `git pull` manually,
 run the update command anyway; it applies the pulled revision when the install
 manifest is older. If both targets are installed, run each
 target's `doctor --fix` after an update or rollback so both generated configs

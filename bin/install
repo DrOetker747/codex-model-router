@@ -59,6 +59,9 @@ if [ "$target" = codex ]; then
 fi
 if [ "$prepare_only" != true ]; then
   node src/provider-selection.mjs ensure-configured >/dev/null
+  if ! node src/sync-auto-models.mjs; then
+    echo "Automatic provider model sync was unavailable; keeping the last known catalog." >&2
+  fi
 fi
 npm ci --omit=dev
 

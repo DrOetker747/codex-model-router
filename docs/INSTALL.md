@@ -101,6 +101,7 @@ API-key providers use hidden prompts:
 ./bin/provider-key deepseek set
 ./bin/provider-key grok-api set
 ./bin/provider-key anthropic-api set
+./bin/provider-key opencode-go set
 ./bin/provider-key ollama-cloud set
 ./bin/provider-key qwen-plan set
 ./bin/provider-key zai-coding set
@@ -127,8 +128,8 @@ Windows:
 ./codex-router.ps1 provider-key anthropic-api set
 ```
 
-Kimi OAuth, Kimi Platform, DeepSeek, xAI, and Anthropic are separate account and billing
-systems. Never put a credential in chat, a command argument, shell history,
+Kimi OAuth, Kimi Platform, OpenCode Go, DeepSeek, xAI, and Anthropic are
+separate account and billing systems. Never put a credential in chat, a command argument, shell history,
 the provider registry, or a tracked file.
 
 Noninteractive setup can reuse already configured credentials:
@@ -247,8 +248,10 @@ Windows:
 
 The updater requires a clean checkout on the recognized GitHub origin. It
 fetches `origin/main`, retains the current revision under
-`refs/codex-router/rollback`, fast-forwards, and reinstalls. A failed install
-automatically checks out and reinstalls the previous revision.
+`refs/codex-router/rollback`, fast-forwards an unmodified checkout, or safely
+rebases a clean local provider extension, and reinstalls. A rebase conflict
+stops before installation. A failed install automatically checks out and
+reinstalls the previous revision.
 
 When upgrading from a release without caller capabilities, the installer
 generates one, replaces only the marked managed URL, tightens config permissions,

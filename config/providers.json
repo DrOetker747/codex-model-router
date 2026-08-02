@@ -369,6 +369,33 @@
         ],
         "prompt": "Google Gemini API key"
       }
+    },
+    {
+      "id": "opencode-go",
+      "displayName": "OpenCode Go",
+      "kind": "openai-compatible",
+      "ownedBy": "opencode",
+      "baseUrl": "https://opencode.ai/zen/go/v1",
+      "baseUrlEnv": "OPENCODE_GO_BASE_URL",
+      "autoSyncModels": true,
+      "anthropicModelPrefixes": [
+        "minimax-",
+        "qwen"
+      ],
+      "responsesModelPrefixes": [
+        "gpt-"
+      ],
+      "credential": {
+        "environment": [
+          "OPENCODE_GO_API_KEY"
+        ],
+        "file": "opencode-go-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-opencode-go"
+        ],
+        "prompt": "OpenCode Go API key"
+      }
     }
   ],
   "models": [
@@ -479,6 +506,31 @@
       ],
       "requestProfile": "kimi-k3",
       "compHash": "kimi-api-k3-v2"
+    },
+    {
+      "slug": "opencode-go/kimi-k3",
+      "gatewayModel": "opencode-go-kimi-k3",
+      "upstreamModel": "kimi-k3",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "Kimi K3 (OpenCode Go)",
+      "description": "Kimi K3 through the OpenCode Go OpenAI-compatible API with tool calls and a 1M context window.",
+      "priority": 6,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "max",
+          "description": "Maximum reasoning for agentic coding"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "kimi-k3",
+      "compHash": "opencode-go-kimi-k3-v1"
     },
     {
       "slug": "deepseek/deepseek-v4-flash",
