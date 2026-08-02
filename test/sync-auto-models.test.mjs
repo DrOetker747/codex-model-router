@@ -119,3 +119,36 @@ test("OpenCode Go catalog sync adds every new model with the correct protocol", 
     rmSync(testRoot, { recursive: true, force: true });
   }
 });
+
+test("OpenCode Free sync excludes every paid Zen model", () => {
+  const testRoot = mkdtempSync(path.join(os.tmpdir(), "opencode-free-sync-"));
+  const stateDir = path.join(testRoot, "state");
+  const fixture = path.join(testRoot, "free-models.json");
+  try {
+    writeFileSync(fixture, JSON.stringify({
+      data: [
+        { id: "big-pickle" },
+        { id: "deepseek-v4-flash-free" },
+        { id: "mimo-v2.5-free" },
+        { id: "gpt-5.6-sol" },
+        { id: "claude-opus-5" },
+      ],
+    }));
+    execFileSync(
+      process.execPath,
+      ["src/sync-auto-models.mjs", "opencode-free", "--fixture", fixture],
+      { cwd: root, env: { ...process.env, MODEL_ROUTER_STATE_DIR: stateDir } },
+    );
+    const models = JSON.parse(
+      readFileSync(path.join(stateDir, "user-models.json"), "utf8"),
+    ).models;
+    assert.deepEqual(models.map((model) => model.upstreamModel).sort(), [
+      "big-pickle",
+      "deepseek-v4-flash-free",
+      "mimo-v2.5-free",
+    ]);
+    assert.ok(models.every((model) => model.pickerVisibility === "hide"));
+  } finally {
+    rmSync(testRoot, { recursive: true, force: true });
+  }
+});

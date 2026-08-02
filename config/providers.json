@@ -399,6 +399,34 @@
         ],
         "prompt": "OpenCode Go API key"
       }
+    },
+    {
+      "id": "opencode-free",
+      "displayName": "OpenCode Free",
+      "kind": "openai-compatible",
+      "ownedBy": "opencode",
+      "baseUrl": "https://opencode.ai/zen/v1",
+      "baseUrlEnv": "OPENCODE_FREE_BASE_URL",
+      "autoSyncModels": true,
+      "modelAllowPatterns": [
+        "^big-pickle$",
+        "-free$"
+      ],
+      "pickerPolicy": "hide-all",
+      "credential": {
+        "environment": [
+          "OPENCODE_GO_API_KEY"
+        ],
+        "file": "opencode-go-api-key.secret",
+        "fallbackFiles": [
+          "opencode-go-api-key-backup.secret"
+        ],
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-opencode-go"
+        ],
+        "prompt": "OpenCode API key"
+      }
     }
   ],
   "models": [

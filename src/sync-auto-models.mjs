@@ -76,6 +76,8 @@ function openCodeGoSotaCandidate(id) {
 }
 
 export function pickerModelIds(providerId, discovered) {
+  const provider = PROVIDERS.get(providerId);
+  if (provider?.pickerPolicy === "hide-all") return new Set();
   if (providerId !== "opencode-go") return new Set(discovered);
   const best = new Map();
   for (const id of [...new Set(discovered)].sort()) {
@@ -94,6 +96,14 @@ export function pickerModelIds(providerId, discovered) {
     }
   }
   return new Set([...best.values()].map((candidate) => candidate.id));
+}
+
+export function filteredDiscoveredModelIds(provider, discovered) {
+  const patterns = (provider.modelAllowPatterns || []).map((value) => new RegExp(value));
+  const unique = [...new Set(discovered)];
+  return patterns.length
+    ? unique.filter((id) => patterns.some((pattern) => pattern.test(id)))
+    : unique;
 }
 
 export function mergeDiscoveredModels(providerId, discovered) {
@@ -122,10 +132,11 @@ export function mergeDiscoveredModels(providerId, discovered) {
       )
       .map((model) => model.upstreamModel),
   );
-  const ids = [...new Set(discovered)]
+  const filtered = filteredDiscoveredModelIds(provider, discovered);
+  const ids = filtered
     .filter((id) => !registered.has(id) && !manualIds.has(id))
     .sort();
-  const pickerIds = pickerModelIds(providerId, discovered);
+  const pickerIds = pickerModelIds(providerId, filtered);
   const synced = ids.map((id, index) => {
     const current = existingById.get(id);
     const pickerVisibility = pickerIds.has(id) ? "list" : "hide";
@@ -150,9 +161,11 @@ export function mergeDiscoveredModels(providerId, discovered) {
 
 export async function syncProvider(providerId) {
   const discovery = await discoverProviderModels(providerId);
+  const provider = PROVIDERS.get(providerId);
+  const filtered = filteredDiscoveredModelIds(provider, discovery.discovered);
   return {
     provider: providerId,
-    discovered: discovery.discovered.length,
+    discovered: filtered.length,
     ...mergeDiscoveredModels(providerId, discovery.discovered),
   };
 }

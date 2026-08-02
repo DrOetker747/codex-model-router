@@ -55,6 +55,25 @@ function loadRegistry() {
       if (provider.protocol !== undefined && !["openai", "anthropic"].includes(provider.protocol)) {
         fail(`provider ${provider.id} has an unsupported API protocol`);
       }
+      if (provider.modelAllowPatterns !== undefined) {
+        if (
+          !Array.isArray(provider.modelAllowPatterns) ||
+          provider.modelAllowPatterns.length === 0 ||
+          provider.modelAllowPatterns.some((value) => typeof value !== "string" || !value)
+        ) {
+          fail(`provider ${provider.id} has invalid modelAllowPatterns`);
+        }
+        for (const value of provider.modelAllowPatterns) {
+          try {
+            new RegExp(value);
+          } catch {
+            fail(`provider ${provider.id} has invalid modelAllowPatterns`);
+          }
+        }
+      }
+      if (provider.pickerPolicy !== undefined && provider.pickerPolicy !== "hide-all") {
+        fail(`provider ${provider.id} has an unsupported pickerPolicy`);
+      }
     }
     providers.set(provider.id, Object.freeze(provider));
   }
