@@ -18,10 +18,24 @@ test("OpenCode Go catalog sync adds every new model with the correct protocol", 
       object: "list",
       data: [
         { id: "kimi-k3" },
+        { id: "kimi-k2.7-code" },
         { id: "grok-4.5" },
+        { id: "grok-4.6" },
+        { id: "glm-5.1" },
+        { id: "glm-5.2" },
         { id: "qwen3.7-max" },
+        { id: "qwen3.7-plus" },
+        { id: "qwen3.6-plus" },
         { id: "minimax-m3" },
+        { id: "minimax-m2.7" },
         { id: "gpt-5.6-luna" },
+        { id: "deepseek-v4-flash" },
+        { id: "deepseek-v4-pro" },
+        { id: "mimo-v2-omni" },
+        { id: "mimo-v2.5" },
+        { id: "mimo-v2.5-pro" },
+        { id: "hy3-preview" },
+        { id: "hy3" },
       ],
     })}\n`,
   );
@@ -38,8 +52,8 @@ test("OpenCode Go catalog sync adds every new model with the correct protocol", 
     );
     const result = JSON.parse(output).results[0];
     assert.equal(result.changed, true);
-    assert.equal(result.discovered, 5);
-    assert.equal(result.models, 4);
+    assert.equal(result.discovered, 19);
+    assert.equal(result.models, 18);
 
     const models = JSON.parse(
       readFileSync(path.join(stateDir, "user-models.json"), "utf8"),
@@ -50,6 +64,25 @@ test("OpenCode Go catalog sync adds every new model with the correct protocol", 
     assert.equal(byId["minimax-m3"].protocol, "anthropic");
     assert.equal(byId["gpt-5.6-luna"].protocol, "responses");
     assert.equal(byId["kimi-k3"], undefined);
+    assert.deepEqual(
+      models
+        .filter((model) => model.pickerVisibility === "list")
+        .map((model) => model.upstreamModel)
+        .sort(),
+      [
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "glm-5.2",
+        "gpt-5.6-luna",
+        "grok-4.6",
+        "hy3",
+        "mimo-v2.5",
+        "mimo-v2.5-pro",
+        "minimax-m3",
+        "qwen3.7-max",
+        "qwen3.7-plus",
+      ],
+    );
 
     const repeatedOutput = execFileSync(
       process.execPath,
@@ -62,11 +95,11 @@ test("OpenCode Go catalog sync adds every new model with the correct protocol", 
     );
     const repeatedResult = JSON.parse(repeatedOutput).results[0];
     assert.equal(repeatedResult.changed, false);
-    assert.equal(repeatedResult.models, 4);
+    assert.equal(repeatedResult.models, 18);
     assert.equal(
       JSON.parse(readFileSync(path.join(stateDir, "user-models.json"), "utf8"))
         .models.length,
-      4,
+      18,
     );
 
     execFileSync(process.execPath, ["src/litellm-config.mjs"], {

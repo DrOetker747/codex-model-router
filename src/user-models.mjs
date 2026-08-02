@@ -31,6 +31,7 @@ export function userModelEntry({
   displayName,
   description,
   autoDiscovered,
+  pickerVisibility,
 }) {
   const gatewayModel = `${gatewaySafe(providerId)}-${gatewaySafe(upstreamId)}`;
   const entry = {
@@ -54,6 +55,7 @@ export function userModelEntry({
   if (requestProfile) entry.requestProfile = requestProfile;
   if (protocol) entry.protocol = protocol;
   if (autoDiscovered) entry.autoDiscovered = autoDiscovered;
+  if (pickerVisibility) entry.pickerVisibility = pickerVisibility;
   return entry;
 }
 

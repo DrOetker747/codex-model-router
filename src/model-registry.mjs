@@ -96,6 +96,12 @@ function modelProblem(model, providers, slugs, gatewayModels) {
     return `model ${model.slug} has an invalid requestProfile`;
   }
   if (
+    model.pickerVisibility !== undefined &&
+    !["list", "hide"].includes(model.pickerVisibility)
+  ) {
+    return `model ${model.slug} has an invalid pickerVisibility`;
+  }
+  if (
     model.protocol !== undefined &&
     !["openai", "anthropic", "responses"].includes(model.protocol)
   ) {

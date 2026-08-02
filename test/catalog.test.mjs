@@ -52,6 +52,42 @@ test("merged catalog preserves native GPT identity while rewriting routed models
   assert.doesNotMatch(bySlug.get("grok-oauth/grok-4.5").base_instructions, /GPT-5/);
 });
 
+test("merged catalog shows only current native generations and routed SOTA models", () => {
+  const nativeModels = [
+    { ...template, slug: "gpt-5.6-sol", priority: 1 },
+    { ...template, slug: "gpt-5.6-terra", priority: 2 },
+    { ...template, slug: "gpt-5.5", priority: 3 },
+    { ...template, slug: "gpt-5.4", priority: 4 },
+  ];
+  const oldRouted = {
+    ...grok,
+    slug: "opencode-go/grok-4.5",
+    displayName: "Grok 4.5 (OpenCode Go)",
+    priority: 100,
+    pickerVisibility: "hide",
+  };
+  const currentRouted = {
+    ...grok,
+    slug: "opencode-go/grok-4.6",
+    displayName: "Grok 4.6 (OpenCode Go)",
+    priority: 101,
+    pickerVisibility: "list",
+  };
+
+  const merged = buildMergedCatalog({ models: nativeModels }, [oldRouted, currentRouted]);
+  assert.deepEqual(
+    merged.filter((model) => model.visibility === "list").map((model) => model.slug),
+    [
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.5",
+      "opencode-go/grok-4.6",
+    ],
+  );
+  assert.ok(merged.some((model) => model.slug === "gpt-5.4"));
+  assert.ok(merged.some((model) => model.slug === "opencode-go/grok-4.5"));
+});
+
 test("login-free catalogs contain only authenticated external models", () => {
   const merged = buildMergedCatalog({ models: [template] }, [grok], {
     includeNative: false,

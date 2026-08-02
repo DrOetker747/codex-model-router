@@ -139,7 +139,7 @@ export function routedModel(template, model) {
     display_name: model.displayName,
     description: model.description,
     priority: model.priority,
-    visibility: "list",
+    visibility: model.pickerVisibility || "list",
     supported_in_api: true,
     default_reasoning_level: model.defaultEffort,
     supported_reasoning_levels: model.reasoningLevels,
@@ -171,6 +171,36 @@ export function routedModel(template, model) {
   return next;
 }
 
+function nativeVersion(slug) {
+  const match = String(slug).match(/^gpt-(\d+)\.(\d+)(?:-|$)/);
+  return match ? [Number(match[1]), Number(match[2])] : undefined;
+}
+
+function currentNativeModels(models) {
+  const versions = [
+    ...new Set(
+      models
+        .filter((model) => model.visibility === "list")
+        .map((model) => nativeVersion(model.slug))
+        .filter(Boolean)
+        .map((version) => version.join(".")),
+    ),
+  ]
+    .sort((left, right) => {
+      const [leftMajor, leftMinor] = left.split(".").map(Number);
+      const [rightMajor, rightMinor] = right.split(".").map(Number);
+      return rightMajor - leftMajor || rightMinor - leftMinor;
+    })
+    .slice(0, 2);
+  const visibleVersions = new Set(versions);
+  return models.map((model) => {
+    if (model.visibility !== "list") return model;
+    const version = nativeVersion(model.slug);
+    if (!version || visibleVersions.has(version.join("."))) return model;
+    return { ...model, visibility: "hide" };
+  });
+}
+
 function sortCatalogModels(models) {
   return [...models].sort((left, right) => {
     const priority = Number(left.priority ?? 999) - Number(right.priority ?? 999);
@@ -187,7 +217,9 @@ export function buildMergedCatalog(native, routedModelsList, { includeNative = t
     throw new Error("Native model catalog is empty.");
   }
   const models = new Map(
-    includeNative ? native.models.map((model) => [model.slug, model]) : [],
+    includeNative
+      ? currentNativeModels(native.models).map((model) => [model.slug, model])
+      : [],
   );
   for (const model of routedModelsList) {
     models.set(model.slug, routedModel(template, model));
@@ -200,7 +232,10 @@ export function buildMergedCatalog(native, routedModelsList, { includeNative = t
 // levels. Each aliased model keeps a hidden entry under its canonical slug so
 // routing, doctor checks, and existing configs keep resolving it.
 export function buildLoginFreeCatalog(native, routedModelsList) {
-  const assignments = buildNativeAliasAssignments(native.models, routedModelsList);
+  const pickerModels = routedModelsList.filter(
+    (model) => model.pickerVisibility !== "hide",
+  );
+  const assignments = buildNativeAliasAssignments(native.models, pickerModels);
   const aliasedSlugs = new Set(assignments.map(({ model }) => model.slug));
   const aliases = Object.fromEntries(
     assignments.map(({ nativeModel, model }) => [nativeModel.slug, model.slug]),
