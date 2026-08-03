@@ -53,6 +53,7 @@ writeFileSync(registryPath, JSON.stringify({
 }));
 process.env.CODEX_ROUTER_STATE_DIR = stateDir;
 process.env.CODEX_ROUTER_REGISTRY = registryPath;
+delete process.env.OLLAMA_API_KEY;
 
 const {
   providerAccountUsageSnapshot,
