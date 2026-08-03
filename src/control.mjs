@@ -122,9 +122,10 @@ async function emitProbe() {
   const { LISTED_MODELS, PROVIDERS } = await import("./model-registry.mjs");
   const { readNativeAliases } = await import("./native-alias.mjs");
 
+  const pickerProbe = args.includes("--picker");
   const enabledProviders = readProviderSelection();
   const configuredProviders = new Set(configuredProviderIds());
-  const usageEvents = TARGET === "codex"
+  const usageEvents = TARGET === "codex" && !pickerProbe
     ? (await import("./usage-events.mjs")).recentUsageEvents()
     : [];
   const routedModels = LISTED_MODELS.map((model) => ({
@@ -141,19 +142,23 @@ async function emitProbe() {
     ? [...nativeCodexModels(NATIVE_CATALOG_PATH), ...routedModels]
     : routedModels;
   const selectedModel = TARGET === "codex" ? configuredDefaultModel(CONFIG_PATH) : undefined;
-  const codexConfig = TARGET === "codex" ? codexConfigSnapshot() : undefined;
+  const codexConfig = TARGET === "codex" && !pickerProbe ? codexConfigSnapshot() : undefined;
 
   process.stdout.write(
     JSON.stringify({
       target: TARGET,
       configured: existsSync(PROVIDER_SELECTION_PATH),
-      active: targetIsActive(TARGET),
+      ...(!pickerProbe ? { active: targetIsActive(TARGET) } : {}),
       enabledProviders,
-      providers: [...PROVIDERS.values()].map((provider) => ({
-        id: provider.id,
-        displayName: provider.displayName,
-        kind: provider.kind,
-      })),
+      ...(!pickerProbe
+        ? {
+            providers: [...PROVIDERS.values()].map((provider) => ({
+              id: provider.id,
+              displayName: provider.displayName,
+              kind: provider.kind,
+            })),
+          }
+        : {}),
       models,
       ...(selectedModel ? { selectedModel } : {}),
       ...(codexConfig
@@ -163,7 +168,10 @@ async function emitProbe() {
           }
         : {}),
       ...(TARGET === "codex"
-        ? { usageEvents, nativeAliases: readNativeAliases() }
+        ? {
+            ...(!pickerProbe ? { usageEvents } : {}),
+            nativeAliases: readNativeAliases(),
+          }
         : {}),
     }),
   );

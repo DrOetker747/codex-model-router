@@ -226,6 +226,7 @@ static NSBox *SymbolTile(NSString *symbol, NSColor *color, CGFloat size) {
 }
 
 - (void)refreshClicked:(id)sender { [self refresh]; }
+- (void)forceQuitClicked:(id)sender { _Exit(EXIT_SUCCESS); }
 - (void)openProviderSettings:(id)sender {
   if (!self.providerSettings) {
     self.providerSettings = [[ProviderSettingsWindowController alloc] initWithSourceRoot:self.sourceRoot];
@@ -261,9 +262,17 @@ static NSBox *SymbolTile(NSString *symbol, NSColor *color, CGFloat size) {
   task.standardOutput = output;
   task.standardError = errors;
   if (![task launchAndReturnError:error]) return nil;
+  __block NSData *data;
+  __block NSData *errorData;
+  dispatch_group_t drains = dispatch_group_create();
+  dispatch_group_async(drains, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    data = [output.fileHandleForReading readDataToEndOfFile];
+  });
+  dispatch_group_async(drains, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    errorData = [errors.fileHandleForReading readDataToEndOfFile];
+  });
   [task waitUntilExit];
-  NSData *data = [output.fileHandleForReading readDataToEndOfFile];
-  NSData *errorData = [errors.fileHandleForReading readDataToEndOfFile];
+  dispatch_group_wait(drains, DISPATCH_TIME_FOREVER);
   if (task.terminationStatus != 0) {
     NSString *detail = [[NSString alloc] initWithData:errorData encoding:NSUTF8StringEncoding];
     if (error) *error = [NSError errorWithDomain:@"ModelPicker" code:task.terminationStatus
@@ -278,14 +287,14 @@ static NSBox *SymbolTile(NSString *symbol, NSColor *color, CGFloat size) {
   [self setBusy:YES message:@"Refreshing model catalog…"];
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     NSError *error;
-    NSData *data = [self runControl:@[@"--json"] error:&error];
+    NSData *data = [self runControl:@[@"--probe", @"--picker"] error:&error];
     NSDictionary *snapshot = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:&error] : nil;
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!snapshot) {
         [self setBusy:NO message:error.localizedDescription ?: @"Router unavailable"];
         return;
       }
-      self.target = snapshot[@"targets"][@"codex"];
+      self.target = snapshot[@"targets"][@"codex"] ?: snapshot;
       self.models = [self uniqueModels:self.target[@"models"] ?: @[]];
       [self updateCurrentModel];
       [self rebuildRows];
@@ -622,6 +631,13 @@ static NSBox *SymbolTile(NSString *symbol, NSColor *color, CGFloat size) {
   self.statusLabel = [self label:@"Loading provider status…" size:9 weight:NSFontWeightRegular color:Muted()];
   [footer addArrangedSubview:self.statusLabel];
   [footer addArrangedSubview:[self spacer]];
+  NSButton *quit = [NSButton buttonWithTitle:@"Force Quit" target:self action:@selector(forceQuitClicked:)];
+  quit.bezelStyle = NSBezelStyleInline;
+  quit.contentTintColor = NSColor.systemRedColor;
+  quit.toolTip = @"Immediately quit Model Picker";
+  quit.keyEquivalent = @"q";
+  quit.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+  [footer addArrangedSubview:quit];
   NSButton *refresh = [NSButton buttonWithTitle:@"Refresh" target:self action:@selector(refreshClicked:)];
   refresh.bezelStyle = NSBezelStyleRounded;
   [footer addArrangedSubview:refresh];
@@ -631,6 +647,7 @@ static NSBox *SymbolTile(NSString *symbol, NSColor *color, CGFloat size) {
 
 - (void)controlTextDidChange:(NSNotification *)obj { [self rebuildRows]; }
 - (void)refreshClicked:(id)sender { [self refresh]; }
+- (void)forceQuitClicked:(id)sender { _Exit(EXIT_SUCCESS); }
 
 - (NSData *)runControl:(NSArray<NSString *> *)arguments input:(NSData *)input error:(NSError **)error {
   NSTask *task = [[NSTask alloc] init];
@@ -652,9 +669,17 @@ static NSBox *SymbolTile(NSString *symbol, NSColor *color, CGFloat size) {
     [standardInput.fileHandleForWriting writeData:input];
     [standardInput.fileHandleForWriting closeFile];
   }
+  __block NSData *data;
+  __block NSData *errorData;
+  dispatch_group_t drains = dispatch_group_create();
+  dispatch_group_async(drains, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    data = [output.fileHandleForReading readDataToEndOfFile];
+  });
+  dispatch_group_async(drains, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    errorData = [errors.fileHandleForReading readDataToEndOfFile];
+  });
   [task waitUntilExit];
-  NSData *data = [output.fileHandleForReading readDataToEndOfFile];
-  NSData *errorData = [errors.fileHandleForReading readDataToEndOfFile];
+  dispatch_group_wait(drains, DISPATCH_TIME_FOREVER);
   if (task.terminationStatus != 0) {
     NSString *detail = [[NSString alloc] initWithData:errorData encoding:NSUTF8StringEncoding];
     if (error) *error = [NSError errorWithDomain:@"ModelPicker" code:task.terminationStatus userInfo:@{NSLocalizedDescriptionKey:detail.length ? [detail stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] : @"Provider update failed."}];
@@ -669,7 +694,7 @@ static NSBox *SymbolTile(NSString *symbol, NSColor *color, CGFloat size) {
     NSError *error;
     NSData *providerData = [self runControl:@[@"providers", @"--json"] input:nil error:&error];
     NSDictionary *providerSnapshot = providerData ? [NSJSONSerialization JSONObjectWithData:providerData options:0 error:&error] : nil;
-    NSData *targetData = !error ? [self runControl:@[@"--json"] input:nil error:&error] : nil;
+    NSData *targetData = !error ? [self runControl:@[@"--probe", @"--picker"] input:nil error:&error] : nil;
     NSDictionary *targetSnapshot = targetData ? [NSJSONSerialization JSONObjectWithData:targetData options:0 error:&error] : nil;
     dispatch_async(dispatch_get_main_queue(), ^{
       if (error) {
@@ -677,7 +702,7 @@ static NSBox *SymbolTile(NSString *symbol, NSColor *color, CGFloat size) {
         return;
       }
       self.providers = providerSnapshot[@"providers"] ?: @[];
-      self.target = targetSnapshot[@"targets"][@"codex"] ?: @{};
+      self.target = targetSnapshot[@"targets"][@"codex"] ?: targetSnapshot ?: @{};
       [self rebuildRows];
       NSUInteger connected = [[self.providers filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(NSDictionary *provider, NSDictionary *_) {
         return [provider[@"configured"] boolValue];

@@ -53,7 +53,11 @@ function probe(target, providers, usageEvents = [], options = {}) {
     );
   }
   try {
-    const output = execFileSync(process.execPath, [path.join(root, "src", "control.mjs"), "--probe"], {
+    const output = execFileSync(process.execPath, [
+      path.join(root, "src", "control.mjs"),
+      "--probe",
+      ...(options.picker ? ["--picker"] : []),
+    ], {
       cwd: root,
       encoding: "utf8",
       env: {
@@ -95,6 +99,31 @@ test("codex probe exposes only privacy-safe recent usage events", () => {
   }]);
   assert.equal("prompt" in slice.usageEvents[0], false);
   assert.equal("response" in slice.usageEvents[0], false);
+});
+
+test("picker probe omits slow status and usage data while preserving its catalog", () => {
+  const slice = probe("codex", ["opencode-go"], [{
+    at: new Date().toISOString(),
+    model: "opencode-go/kimi-k3",
+    provider: "opencode-go",
+    status: 200,
+    durationMs: 100,
+  }], {
+    picker: true,
+    selectedModel: "gpt-5.6-sol",
+    nativeModels: [
+      { slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" },
+    ],
+  });
+
+  assert.equal(slice.target, "codex");
+  assert.equal(slice.selectedModel, "gpt-5.6-sol");
+  assert.equal(slice.models.some((model) => model.slug === "gpt-5.6-sol"), true);
+  assert.equal(slice.models.some((model) => model.provider === "opencode-go"), true);
+  assert.equal("active" in slice, false);
+  assert.equal("usageEvents" in slice, false);
+  assert.equal("loginFree" in slice, false);
+  assert.equal("providers" in slice, false);
 });
 
 test("codex probe includes native GPT models and the configured default", () => {
