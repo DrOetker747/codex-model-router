@@ -48,6 +48,8 @@ done
 node -e 'const [a,b]=process.versions.node.split(".").map(Number); if (!(a>22 || (a===22 && b>=19))) { console.error("Node.js 22.19 or newer is required."); process.exit(1) }'
 
 cd "$repo_dir"
+npm ci --omit=dev
+
 if [ "$target" = codex ]; then
   codex_home=${CODEX_HOME:-$HOME/.codex}
   mkdir -p "$codex_home"
@@ -63,7 +65,6 @@ if [ "$prepare_only" != true ]; then
     echo "Automatic provider model sync was unavailable; keeping the last known catalog." >&2
   fi
 fi
-npm ci --omit=dev
 
 if command -v uv >/dev/null 2>&1; then
   if [ ! -x .venv/bin/python ]; then
