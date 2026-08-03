@@ -38,7 +38,10 @@ function normalizeOnlyRootModel(contents) {
     }
   }
   assert.equal(modelLines, 1, "config must contain exactly one root model row");
-  return lines.join("\n");
+  return lines.join("\n").replace(
+    /\n*# BEGIN codex-router-agents-managed\n[\s\S]*?\n# END codex-router-agents-managed\n?/g,
+    "\n",
+  ).trimEnd();
 }
 
 function assertOnlyRootModelChanged(before, after, expectedModel) {
@@ -488,6 +491,14 @@ test("model-set safely selects authenticated, native, and login-free models", ()
     assert.equal(native.model_provider, "openai");
 
     runControl("auth-mode", "on");
+    assert.deepEqual(
+      JSON.parse(readFileSync(path.join(stateDir, "native-aliases.json"), "utf8")).aliases,
+      { "gpt-5.6-sol": "deepseek/deepseek-v4-flash" },
+    );
+    assert.equal(
+      rootValue(readFileSync(path.join(stateDir, "config.toml"), "utf8"), "model_provider"),
+      '"codex-router"',
+    );
     const switched = runControl("model-set", "deepseek/deepseek-v4-flash");
     assert.equal(switched.model, "gpt-5.6-sol");
     assert.equal(switched.model_provider, "codex-router");

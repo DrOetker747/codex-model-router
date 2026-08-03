@@ -68,6 +68,8 @@ test("routed agent definitions select the router provider and exact model slug",
   assert.match(definition.contents, /^# Managed by Codex Router\./);
   assert.match(definition.contents, /model_provider = "codex-router"/);
   assert.match(definition.contents, /model = "kimi-oauth\/k3"/);
+  assert.doesNotMatch(definition.contents, /^name\s*=/m);
+  assert.doesNotMatch(definition.contents, /^description\s*=/m);
 });
 
 test("agent sync writes one private definition for every routed model", () => {
@@ -85,7 +87,7 @@ test("agent sync writes one private definition for every routed model", () => {
     ],
   );
   const kimiFile = path.join(agentsDir, "router-model-kimi-oauth-k3.toml");
-  assert.match(readFileSync(kimiFile, "utf8"), /name = "router_kimi_oauth_k3"/);
+  assert.match(readFileSync(kimiFile, "utf8"), /model = "kimi-oauth\/k3"/);
   assert.deepEqual(routedCodexAgentStatus([kimi], agentsDir), {
     expected: 1,
     current: 1,

@@ -507,6 +507,7 @@ async function setLoginFreeMode(desired) {
         ...process.env,
         MODEL_ROUTER_TARGET: "codex",
         MODEL_ROUTER_LOGIN_FREE: desired === "on" ? "1" : "0",
+        MODEL_ROUTER_SKIP_AGENT_REGISTRATION: "1",
       },
       encoding: "utf8",
     },
@@ -533,6 +534,12 @@ async function setLoginFreeMode(desired) {
   if (result.status !== 0) {
     throw new Error((result.stderr || "Codex provider mode could not be changed.").trim());
   }
+  const agentCatalog = await import("./codex-agent-catalog.mjs");
+  const { syncExternalAgentRegistrations } = await import("./codex-agent-registration.mjs");
+  const rebuilt = agentCatalog.rebuildExternalSubagentProfiles({
+    mergedCatalog: readMergedCatalog(),
+  });
+  syncExternalAgentRegistrations(rebuilt.externalProfiles);
   process.stdout.write(result.stdout);
 }
 
@@ -762,6 +769,7 @@ async function setExternalAgentProfile(slug, desired) {
 
   const selectionSnapshot = snapshotFile(agentCatalog.EXTERNAL_AGENT_SELECTION_PATH);
   const agentsSnapshot = snapshotManagedAgents();
+  const configSnapshot = snapshotFile(CONFIG_PATH);
   const current = agentCatalog.readSelectedExternalAgentProfiles();
   const next = desired === "on"
     ? [...new Set([...current, value])]
@@ -772,6 +780,8 @@ async function setExternalAgentProfile(slug, desired) {
       mergedCatalog: readMergedCatalog(),
       selectedProfiles,
     });
+    const { syncExternalAgentRegistrations } = await import("./codex-agent-registration.mjs");
+    syncExternalAgentRegistrations(rebuilt.externalProfiles);
     process.stdout.write(`${JSON.stringify({
       slug: value,
       selected: desired === "on",
@@ -781,6 +791,7 @@ async function setExternalAgentProfile(slug, desired) {
   } catch (error) {
     restoreFile(agentCatalog.EXTERNAL_AGENT_SELECTION_PATH, selectionSnapshot);
     restoreManagedAgents(agentsSnapshot);
+    restoreFile(CONFIG_PATH, configSnapshot);
     throw error;
   }
 }

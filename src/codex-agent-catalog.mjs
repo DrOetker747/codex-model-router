@@ -227,8 +227,6 @@ export function routedAgentDefinition(model, status = "catalog-only") {
   const contents = [
     "# Managed by Codex Router. Refresh the model catalog to update this file.",
     `# Profile status: ${status}`,
-    `name = ${tomlString(agentName)}`,
-    `description = ${tomlString(`${displayName} agent routed through an authenticated Codex Router provider.`)}`,
     'model_provider = "codex-router"',
     `model = ${tomlString(slug)}`,
     "",

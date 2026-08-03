@@ -21,6 +21,7 @@ import {
   preserveNativeAgentProfiles,
   rebuildExternalSubagentProfiles,
 } from "./codex-agent-catalog.mjs";
+import { syncExternalAgentRegistrations } from "./codex-agent-registration.mjs";
 import { MODEL_BY_SLUG } from "./model-registry.mjs";
 import { buildNativeAliasAssignments } from "./native-alias.mjs";
 import { selectedConfiguredListedModels } from "./provider-selection.mjs";
@@ -294,12 +295,16 @@ function main() {
     },
   });
   const routedAgents = profileCatalog.externalProfiles;
+  const agentRegistrations = process.env.MODEL_ROUTER_SKIP_AGENT_REGISTRATION === "1"
+    ? { registered: [], skipped: [] }
+    : syncExternalAgentRegistrations(routedAgents);
   process.stdout.write(
     `${JSON.stringify({
       path: MERGED_CATALOG_PATH,
       models: merged.length,
       routed_models: routedModels.length,
       routed_agents: routedAgents.length,
+      registered_agents: agentRegistrations.registered.length,
       native_models: !loginFree && openaiAuthenticated
         ? merged.filter((model) => !MODEL_BY_SLUG.has(String(model.slug))).length
         : 0,

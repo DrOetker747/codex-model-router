@@ -29,6 +29,10 @@ import {
   PORTS,
   loopback,
 } from "./paths.mjs";
+import {
+  externalAgentRegistrationBlock,
+  removeExternalAgentRegistrationBlock,
+} from "./codex-agent-registration.mjs";
 
 const legacyRouterBaseUrl = loopback(PORTS.router, "/v1");
 const startMarker = "# BEGIN codex-router-managed";
@@ -392,11 +396,13 @@ if (!new Set(["enable", "disable", "status", "model-set", "login-free-enable", "
   process.exit(2);
 }
 
-const current = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : "";
+const rawCurrent = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : "";
 if (command === "status") {
-  process.stdout.write(`${JSON.stringify(snapshot(current))}\n`);
+  process.stdout.write(`${JSON.stringify(snapshot(rawCurrent))}\n`);
   process.exit(0);
 }
+const agentRegistrationBlock = externalAgentRegistrationBlock(rawCurrent);
+const current = removeExternalAgentRegistrationBlock(rawCurrent);
 
 let next;
 let pendingProviderModeState;
@@ -461,7 +467,13 @@ if (command === "enable") {
       "",
       ...trimBlankEdges(cleaned.tableLines),
     ].join("\n").trimEnd()}\n`;
+    if (command === "disable") {
+      next = `${removeExternalAgentRegistrationBlock(next)}\n`;
+    }
   }
+}
+if (command !== "disable" && agentRegistrationBlock) {
+  next = `${next.trimEnd()}\n\n${agentRegistrationBlock}\n`;
 }
 if (existsSync(CONFIG_PATH) && !existsSync(BACKUP_PATH)) {
   copyFileSync(CONFIG_PATH, BACKUP_PATH);
