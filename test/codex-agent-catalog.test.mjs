@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { protectPrivateFile } from "../src/file-security.mjs";
+
 import {
   MAX_SELECTED_EXTERNAL_PROFILES,
   preserveNativeAgentProfiles,
@@ -249,6 +251,7 @@ test("catalog tool-call metadata stays catalog-only and protected verification i
       })}\n`,
       { mode: 0o600 },
     );
+    protectPrivateFile(verificationPath);
     const verified = readVerifiedExternalAgentProfiles(verificationPath);
     assert.deepEqual([...verified], [model.slug]);
     const rebuilt = rebuildExternalSubagentProfiles({

@@ -769,7 +769,9 @@ test("failed external profile update restores disabled-provider selection and mo
     );
     assert.deepEqual(readFileSync(providersPath), originalProviders);
     assert.equal(readFileSync(existingManagedAgent, "utf8"), "# Managed by Codex Router. old definition\n");
-    assert.equal(statSync(existingManagedAgent).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.equal(statSync(existingManagedAgent).mode & 0o777, 0o600);
+    }
     assert.equal(statSync(userOwnedAgent).isDirectory(), true);
     assert.equal(readdirSync(agentsDir).some((name) => name.includes(".tmp.")), false);
   } finally {
