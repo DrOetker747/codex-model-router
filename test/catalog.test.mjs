@@ -70,6 +70,21 @@ test("routed models rewrite GPT identity text to the external model name", () =>
   assert.equal(model.model_messages.instructions_variables.personality_default, "");
 });
 
+test("routed catalog retains canonical external metadata without replacing native identity", () => {
+  const native = { ...template, slug: "gpt-5.6-sol", display_name: "Sol", role: "native-sol" };
+  const merged = buildMergedCatalog(
+    { models: [native] },
+    [{ ...grok, slug: "qwen-plan/qwen3.7-max", provider: "qwen-plan", listed: true }],
+  );
+  const nativeModel = merged.find((model) => model.slug === "gpt-5.6-sol");
+  const externalModel = merged.find((model) => model.slug === "qwen-plan/qwen3.7-max");
+  assert.equal(nativeModel.display_name, "Sol");
+  assert.equal(nativeModel.role, "native-sol");
+  assert.equal(externalModel.provider, "qwen-plan");
+  assert.equal(externalModel.listed, true);
+  assert.equal(externalModel.visibility, "list");
+});
+
 test("merged catalog preserves native GPT identity while rewriting routed models", () => {
   const merged = buildMergedCatalog({ models: [template] }, [grok]);
   const bySlug = new Map(merged.map((model) => [model.slug, model]));

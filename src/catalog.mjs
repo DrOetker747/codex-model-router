@@ -17,7 +17,10 @@ import {
   NATIVE_CATALOG_PATH,
 } from "./paths.mjs";
 import { codexIsAuthenticated, requireCodexBinary } from "./codex-binary.mjs";
-import { syncRoutedCodexAgents } from "./codex-agent-catalog.mjs";
+import {
+  preserveNativeAgentProfiles,
+  rebuildExternalSubagentProfiles,
+} from "./codex-agent-catalog.mjs";
 import { MODEL_BY_SLUG } from "./model-registry.mjs";
 import { buildNativeAliasAssignments } from "./native-alias.mjs";
 import { selectedConfiguredListedModels } from "./provider-selection.mjs";
@@ -148,6 +151,9 @@ export function routedModel(template, model) {
   const next = {
     ...template,
     slug: model.slug,
+    provider: model.provider,
+    listed: model.listed,
+    protocol: model.protocol,
     display_name: model.displayName,
     description: model.description,
     priority: model.priority,
@@ -281,7 +287,13 @@ function main() {
       };
   writeModelCatalogJson(merged);
   atomicJson(NATIVE_ALIAS_PATH, { version: 1, aliases });
-  const routedAgents = syncRoutedCodexAgents(routedModels);
+  const profileCatalog = rebuildExternalSubagentProfiles({
+    mergedCatalog: {
+      models: merged,
+      nativeProfiles: preserveNativeAgentProfiles(native),
+    },
+  });
+  const routedAgents = profileCatalog.externalProfiles;
   process.stdout.write(
     `${JSON.stringify({
       path: MERGED_CATALOG_PATH,

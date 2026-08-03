@@ -230,3 +230,51 @@ export function providerForModel(model) {
 export function protocolForModel(model) {
   return model.protocol || providerForModel(model)?.protocol || "openai";
 }
+
+const EXTERNAL_AGENT_PROTOCOLS = new Set(["openai", "anthropic", "responses"]);
+
+function modelProviderId(model) {
+  const slug = String(model?.slug || "");
+  const slugProvider = slug.includes("/") ? slug.slice(0, slug.indexOf("/")) : "";
+  const provider = String(model?.provider || slugProvider).trim();
+  return provider && provider === slugProvider ? provider : undefined;
+}
+
+function validReasoning(model) {
+  const levels = model?.reasoningLevels || model?.supported_reasoning_levels;
+  if (!Array.isArray(levels) || levels.length === 0) return false;
+  if (levels.some((level) => !level || typeof level.effort !== "string" || !level.effort)) {
+    return false;
+  }
+  const effort = model.defaultEffort || model.default_reasoning_level;
+  return typeof effort === "string" && levels.some((level) => level.effort === effort);
+}
+
+// External agent generation is deliberately conservative. A model can be
+// listed in the catalog and still remain catalog-only when tool calls were
+// not explicitly verified elsewhere.
+export function isCompatibleExternalSubagent(model, profile = {}) {
+  const slug = String(model?.slug || "").trim();
+  const providerId = modelProviderId(model);
+  const provider = providerId ? PROVIDERS.get(providerId) : undefined;
+  if (!slug.includes("/") || model?.listed === false || !provider) return false;
+  const protocol = model.protocol || provider.protocol || "openai";
+  if (!EXTERNAL_AGENT_PROTOCOLS.has(protocol)) return false;
+  if (provider.protocol && model.protocol && provider.protocol !== model.protocol) return false;
+  const modalities = model.inputModalities || model.input_modalities;
+  if (!Array.isArray(modalities) || !modalities.includes("text")) return false;
+  if (modalities.some((modality) => !["text", "image"].includes(modality))) return false;
+  const contextWindow = model.contextWindow || model.context_window;
+  const autoCompact = model.autoCompact || model.auto_compact_token_limit;
+  if (!Number.isInteger(contextWindow) || contextWindow < 1) return false;
+  if (autoCompact !== undefined &&
+      (!Number.isInteger(autoCompact) || autoCompact < 1 || autoCompact > contextWindow)) {
+    return false;
+  }
+  if (!validReasoning(model)) return false;
+  const profileProvider = profile.model_provider || profile.modelProvider;
+  const profileModel = profile.model || profile.slug;
+  if (profileProvider !== undefined && profileProvider !== "codex-router") return false;
+  if (profileModel !== undefined && profileModel !== slug) return false;
+  return true;
+}
