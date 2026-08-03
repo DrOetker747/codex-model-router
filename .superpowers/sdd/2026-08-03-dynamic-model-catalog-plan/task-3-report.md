@@ -47,3 +47,18 @@ Verification:
 - 0 failed
 
 `git diff --check` was run before commit. No real Codex restart, network, inference, or vendor-quota test was used.
+
+## Fix round 2
+
+The preservation test exposed a real production issue: `config-manager.mjs` moved the root `model` assignment when replacing it. The existing assignment is now replaced in place. Duplicate root assignments are still removed, and new assignments retain the managed insertion point.
+
+The control tests now compare the whole TOML byte-for-byte after normalizing only the one root `model` row. They also assert exact `model_provider`, MCP sections, root-level unrelated rows, native selection, external selection, and rollback preservation.
+
+Verification:
+
+`node --test test/control.test.mjs test/config-manager.test.mjs`
+
+- 27 passed
+- 0 failed
+
+`git diff --check` passed. No network, inference, real restart, or vendor-quota test was used.

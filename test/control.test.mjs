@@ -16,6 +16,37 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+function rootToml(contents) {
+  const lines = contents.split("\n");
+  const firstTable = lines.findIndex((line) => /^\s*\[/.test(line));
+  return lines.slice(0, firstTable === -1 ? lines.length : firstTable).join("\n");
+}
+
+function rootValue(contents, key) {
+  return rootToml(contents).match(new RegExp(`^\\s*${key}\\s*=\\s*(.+)$`, "m"))?.[1]?.trim();
+}
+
+function normalizeOnlyRootModel(contents) {
+  const lines = contents.split("\n");
+  const firstTable = lines.findIndex((line) => /^\s*\[/.test(line));
+  const rootEnd = firstTable === -1 ? lines.length : firstTable;
+  let modelLines = 0;
+  for (let index = 0; index < rootEnd; index += 1) {
+    if (/^\s*model\s*=/.test(lines[index])) {
+      modelLines += 1;
+      lines[index] = "model = <managed-model>";
+    }
+  }
+  assert.equal(modelLines, 1, "config must contain exactly one root model row");
+  return lines.join("\n");
+}
+
+function assertOnlyRootModelChanged(before, after, expectedModel) {
+  assert.equal(rootValue(after, "model"), JSON.stringify(expectedModel));
+  assert.equal(rootValue(after, "model_provider"), rootValue(before, "model_provider"));
+  assert.equal(normalizeOnlyRootModel(after), normalizeOnlyRootModel(before));
+}
+
 function probe(target, providers, usageEvents = [], options = {}) {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-probe-"));
   writeFileSync(
@@ -534,7 +565,6 @@ test("model catalog and selection preserve native state and support an explicit 
       { cwd: root, encoding: "utf8", env: environment },
     );
     const beforeConfig = readFileSync(configPath, "utf8");
-    const beforeMcp = beforeConfig.slice(beforeConfig.indexOf("[mcp_servers.local]"));
     const beforeCredential = readFileSync(credentialsPath);
     const beforeSkill = readFileSync(skillsPath);
     const beforeCredentialMode = statSync(credentialsPath).mode;
@@ -554,9 +584,10 @@ test("model catalog and selection preserve native state and support an explicit 
     assert.equal(saved.selectedModel, "deepseek/deepseek-v4-pro");
     assert.equal(saved.restartRequired, true);
     assert.equal(saved.restarted, false);
-    assert.equal(
-      readFileSync(configPath, "utf8").slice(readFileSync(configPath, "utf8").indexOf("[mcp_servers.local]")),
-      beforeMcp,
+    assertOnlyRootModelChanged(
+      beforeConfig,
+      readFileSync(configPath, "utf8"),
+      "deepseek/deepseek-v4-pro",
     );
     assert.deepEqual(readFileSync(credentialsPath), beforeCredential);
     assert.deepEqual(readFileSync(skillsPath), beforeSkill);
@@ -575,10 +606,16 @@ test("model catalog and selection preserve native state and support an explicit 
       false,
     );
 
+    const beforeNativeConfig = readFileSync(configPath, "utf8");
     const restarted = runControl("model-set", "gpt-5.6-sol", "--restart=true");
     assert.equal(restarted.selectedModel, "gpt-5.6-sol");
     assert.equal(restarted.restarted, true);
     assert.equal(restarted.restartRequired, false);
+    assertOnlyRootModelChanged(
+      beforeNativeConfig,
+      readFileSync(configPath, "utf8"),
+      "gpt-5.6-sol",
+    );
     assert.equal(readFileSync(restartLog, "utf8"), "called\n");
 
     const directRestart = runControl("codex-restart");
@@ -600,7 +637,11 @@ test("failed catalog rebuild restores disabled-provider selection and model conf
   const configPath = path.join(stateDir, "config.toml");
   const providersPath = path.join(stateDir, "enabled-providers.json");
   const agentsDir = path.join(stateDir, "agents");
-  writeFileSync(configPath, `model = "gpt-5.6-sol"\n`, { mode: 0o600 });
+  writeFileSync(
+    configPath,
+    `model = "gpt-5.6-sol"\nmodel_provider = "openai"\nroot_keep = "keep-me"\n\n[mcp_servers.local]\ncommand = "keep-me"\n`,
+    { mode: 0o600 },
+  );
   writeFileSync(
     providersPath,
     `${JSON.stringify({ version: 1, providers: ["kimi-api"] })}\n`,
@@ -642,6 +683,11 @@ test("failed catalog rebuild restores disabled-provider selection and model conf
       /catalog|Native model catalog|EISDIR|directory|user-owned/i,
     );
     assert.deepEqual(readFileSync(configPath), originalConfig);
+    assertOnlyRootModelChanged(
+      originalConfig.toString("utf8"),
+      readFileSync(configPath, "utf8"),
+      "gpt-5.6-sol",
+    );
     assert.deepEqual(readFileSync(providersPath), originalProviders);
     assert.equal(readFileSync(existingManagedAgent, "utf8"), "# Managed by Codex Router. old definition\n");
     assert.equal(statSync(existingManagedAgent).mode & 0o777, 0o600);

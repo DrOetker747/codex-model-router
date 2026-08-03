@@ -141,16 +141,23 @@ function nativeRealtimeCallBaseUrl(lines) {
 
 function replaceRootValue(contents, key, value) {
   const { rootLines, tableLines } = splitRoot(contents);
-  const filtered = rootLines.filter(
-    (line) => !new RegExp(`^\\s*${key}\\s*=`).test(line),
-  );
+  const assignment = new RegExp(`^\\s*${key}\\s*=`);
+  const existing = rootLines.findIndex((line) => assignment.test(line));
+  const filtered = rootLines.filter((line, index) => !assignment.test(line) || index === existing);
   if (value !== undefined) {
-    const managedBlock = filtered.findIndex((line) => line.trim() === startMarker);
-    filtered.splice(
-      managedBlock === -1 ? filtered.length : managedBlock,
-      0,
-      `${key} = ${JSON.stringify(value)}`,
-    );
+    if (existing === -1) {
+      const managedBlock = filtered.findIndex((line) => line.trim() === startMarker);
+      filtered.splice(
+        managedBlock === -1 ? filtered.length : managedBlock,
+        0,
+        `${key} = ${JSON.stringify(value)}`,
+      );
+    } else {
+      filtered[filtered.findIndex((line) => assignment.test(line))] =
+        `${key} = ${JSON.stringify(value)}`;
+    }
+  } else if (existing !== -1) {
+    filtered.splice(filtered.findIndex((line) => assignment.test(line)), 1);
   }
   return [...trimBlankEdges(filtered), "", ...trimBlankEdges(tableLines)]
     .join("\n")
