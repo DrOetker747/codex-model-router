@@ -224,11 +224,13 @@ export function routedAgentDefinition(model, status = "catalog-only") {
   const fileStem = `router-model-${safeIdentifier(slug, "-")}`;
   const agentName = `router_${safeIdentifier(slug, "_")}`;
   const displayName = String(model.displayName || model.display_name || slug).trim();
+  const reasoningEffort = String(model.default_reasoning_level || "").trim();
   const contents = [
     "# Managed by Codex Router. Refresh the model catalog to update this file.",
     `# Profile status: ${status}`,
     'model_provider = "codex-router"',
     `model = ${tomlString(slug)}`,
+    ...(reasoningEffort ? [`model_reasoning_effort = ${tomlString(reasoningEffort)}`] : []),
     "",
     'developer_instructions = """',
     "Complete the bounded task assigned by the parent agent.",

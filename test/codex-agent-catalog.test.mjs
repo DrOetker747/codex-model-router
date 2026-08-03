@@ -22,6 +22,7 @@ import {
 const kimi = {
   slug: "kimi-oauth/k3",
   displayName: "Kimi K3 (OAuth)",
+  default_reasoning_level: "high",
 };
 
 const qwen = {
@@ -68,6 +69,7 @@ test("routed agent definitions select the router provider and exact model slug",
   assert.match(definition.contents, /^# Managed by Codex Router\./);
   assert.match(definition.contents, /model_provider = "codex-router"/);
   assert.match(definition.contents, /model = "kimi-oauth\/k3"/);
+  assert.match(definition.contents, /model_reasoning_effort = "high"/);
   assert.doesNotMatch(definition.contents, /^name\s*=/m);
   assert.doesNotMatch(definition.contents, /^description\s*=/m);
 });
