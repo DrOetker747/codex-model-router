@@ -12,19 +12,72 @@ function option(name) {
   return index === -1 ? undefined : process.argv[index + 1];
 }
 
-export function normalizeModelCatalog(payload) {
+function modelCatalogData(payload) {
   const data = Array.isArray(payload)
     ? payload
     : Array.isArray(payload?.data)
       ? payload.data
       : payload?.models;
   if (!Array.isArray(data)) throw new Error("The provider returned an invalid model list.");
-  return [...new Set(
-    data
-      .map((item) => (typeof item === "string" ? item : item?.id))
-      .map((id) => String(id || "").trim())
-      .filter(Boolean),
-  )].sort();
+  return data;
+}
+
+function safeCreated(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const normalized = value.trim();
+  const numeric = Number(normalized);
+  if (Number.isFinite(numeric)) return numeric;
+  return Number.isFinite(Date.parse(normalized)) ? normalized : undefined;
+}
+
+function safeProvider(value) {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return /^[a-z0-9][a-z0-9._-]{0,127}$/.test(normalized) ? normalized : undefined;
+}
+
+function safeCapabilities(value) {
+  const names = Array.isArray(value)
+    ? value
+    : value && typeof value === "object"
+      ? Object.keys(value).filter((key) => value[key] === true)
+      : [];
+  const normalized = [...new Set(names
+    .filter((name) => typeof name === "string")
+    .map((name) => name.trim().toLowerCase())
+    .filter((name) => /^[a-z0-9][a-z0-9._-]{0,63}$/.test(name)))].sort();
+  return normalized.length ? normalized : undefined;
+}
+
+export function normalizeModelCatalogRecords(payload) {
+  const records = modelCatalogData(payload)
+    .map((item) => {
+      const source = typeof item === "string" ? { id: item } : item;
+      const id = String(source?.id || "").trim();
+      if (!id) return undefined;
+      const record = { id };
+      const created = safeCreated(source.created);
+      const provider = safeProvider(source.provider);
+      const capabilities = safeCapabilities(source.capabilities);
+      if (created !== undefined) record.created = created;
+      if (provider !== undefined) record.provider = provider;
+      if (typeof source.priority === "number" && Number.isFinite(source.priority)) {
+        record.priority = source.priority;
+      }
+      if (capabilities !== undefined) record.capabilities = capabilities;
+      return record;
+    })
+    .filter(Boolean)
+    .sort((left, right) => {
+      const byId = left.id === right.id ? 0 : left.id < right.id ? -1 : 1;
+      if (byId) return byId;
+      return JSON.stringify(left).localeCompare(JSON.stringify(right));
+    });
+  return records.filter((record, index) => index === 0 || record.id !== records[index - 1].id);
+}
+
+export function normalizeModelCatalog(payload) {
+  return normalizeModelCatalogRecords(payload).map((record) => record.id);
 }
 
 function providerFor(providerOrId) {

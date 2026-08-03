@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  compareModelRecords,
   compareModelVersions,
   parseModelFamilyAndVersion,
+  rankSotaModels,
   selectSotaModelIds,
 } from "../src/sota-ranking.mjs";
 
@@ -114,4 +116,38 @@ test("returns the same order for the same catalog in any input order", () => {
   const first = [...selectSotaModelIds(models)];
   const second = [...selectSotaModelIds([...models].reverse())];
   assert.deepEqual(first, second);
+});
+
+test("uses priority, capabilities, provider, and canonical id as stable tie-breaks", () => {
+  const common = { created: "2026-08-03T10:00:00.000Z" };
+  assert.ok(compareModelRecords(
+    { id: "kimi-k3-b", ...common, priority: 1 },
+    { id: "kimi-k3-a", ...common, priority: 2 },
+  ) > 0);
+  assert.ok(compareModelRecords(
+    { id: "kimi-k3-a", ...common, priority: 2, capabilities: ["tools", "vision"] },
+    { id: "kimi-k3-b", ...common, priority: 2, capabilities: ["tools"] },
+  ) > 0);
+  assert.ok(compareModelRecords(
+    { id: "kimi-k3-z", ...common, priority: 2, capabilities: ["tools"], provider: "a" },
+    { id: "kimi-k3-a", ...common, priority: 2, capabilities: ["tools"], provider: "b" },
+  ) > 0);
+  assert.ok(compareModelRecords(
+    { id: "kimi-k3-a", ...common },
+    { id: "kimi-k3-b", ...common },
+  ) > 0);
+
+  const records = [
+    { id: "kimi-k3-z", ...common, provider: "b" },
+    { id: "kimi-k3-a", ...common, provider: "a" },
+  ];
+  assert.deepEqual(rankSotaModels(records).map((model) => model.id), [
+    "kimi-k3-a",
+    "kimi-k3-z",
+  ]);
+  assert.deepEqual([...selectSotaModelIds(records)], ["kimi-k3-a"]);
+  assert.deepEqual([...selectSotaModelIds([
+    { id: "kimi-k3-a", ...common, capabilities: ["tools"] },
+    { id: "kimi-k3-z", ...common, capabilities: ["reasoning", "tools"] },
+  ])], ["kimi-k3-z"]);
 });

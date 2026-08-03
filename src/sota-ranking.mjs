@@ -45,29 +45,96 @@ function createdValue(model) {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function priorityValue(model) {
+  return typeof model?.priority === "number" && Number.isFinite(model.priority)
+    ? model.priority
+    : undefined;
+}
+
+function capabilityScore(model) {
+  if (typeof model?.capabilityScore === "number" && Number.isFinite(model.capabilityScore)) {
+    return model.capabilityScore;
+  }
+  if (Array.isArray(model?.capabilities)) {
+    return new Set(model.capabilities.filter((value) => typeof value === "string")).size;
+  }
+  if (model?.capabilities && typeof model.capabilities === "object") {
+    return Object.values(model.capabilities).filter((value) => value === true).length;
+  }
+  return undefined;
+}
+
+function providerValue(model) {
+  const provider = typeof model?.provider === "string" ? model.provider.trim() : "";
+  return provider || undefined;
+}
+
 function candidate(model) {
   const id = typeof model === "string" ? model.trim() : String(model?.id || "").trim();
   const parsed = parseModelFamilyAndVersion(id);
-  return parsed ? { id, ...parsed, created: createdValue(model) } : undefined;
+  return parsed ? {
+    id,
+    ...parsed,
+    created: createdValue(model),
+    priority: priorityValue(model),
+    capabilityScore: capabilityScore(model),
+    provider: providerValue(model),
+  } : undefined;
 }
 
-function compareCandidates(left, right) {
+function compareOptionalNumbers(left, right) {
+  if (left !== undefined && right !== undefined && left !== right) return left > right ? 1 : -1;
+  if (left !== undefined && right === undefined) return 1;
+  if (left === undefined && right !== undefined) return -1;
+  return 0;
+}
+
+function comparePriority(left, right) {
+  if (left !== undefined && right !== undefined && left !== right) return left < right ? 1 : -1;
+  if (left !== undefined && right === undefined) return 1;
+  if (left === undefined && right !== undefined) return -1;
+  return 0;
+}
+
+export function compareModelRecords(leftModel, rightModel) {
+  const left = candidate(leftModel);
+  const right = candidate(rightModel);
+  if (!left || !right) {
+    if (left) return 1;
+    if (right) return -1;
+    const leftId = typeof leftModel === "string" ? leftModel : String(leftModel?.id || "");
+    const rightId = typeof rightModel === "string" ? rightModel : String(rightModel?.id || "");
+    return -idCompare(leftId, rightId);
+  }
+  if (left.key !== right.key) return -idCompare(left.key, right.key);
   const version = compareModelVersions(left.versionParts, right.versionParts);
   if (version) return version;
-  if (left.created !== undefined && right.created !== undefined && left.created !== right.created) {
-    return left.created > right.created ? 1 : -1;
+  const created = compareOptionalNumbers(left.created, right.created);
+  if (created) return created;
+  const priority = comparePriority(left.priority, right.priority);
+  if (priority) return priority;
+  const capabilities = compareOptionalNumbers(left.capabilityScore, right.capabilityScore);
+  if (capabilities) return capabilities;
+  if (left.provider !== right.provider) {
+    if (left.provider !== undefined && right.provider === undefined) return 1;
+    if (left.provider === undefined && right.provider !== undefined) return -1;
+    return -idCompare(left.provider, right.provider);
   }
-  if (left.created !== undefined && right.created === undefined) return 1;
-  if (left.created === undefined && right.created !== undefined) return -1;
   return -idCompare(left.id, right.id);
 }
 
-export function selectSotaModelIds(models) {
+export function rankSotaModels(models) {
   const input = typeof models === "string" ? [models] : models || [];
+  return [...input]
+    .map(candidate)
+    .filter(Boolean)
+    .sort((left, right) => -compareModelRecords(left, right));
+}
+
+export function selectSotaModelIds(models) {
   const best = new Map();
-  for (const item of [...input].map(candidate).filter(Boolean).sort((a, b) => idCompare(a.id, b.id))) {
-    const current = best.get(item.key);
-    if (!current || compareCandidates(item, current) > 0) best.set(item.key, item);
+  for (const item of rankSotaModels(models)) {
+    if (!best.has(item.key)) best.set(item.key, item);
   }
   return new Set([...best.values()].map((item) => item.id).sort(idCompare));
 }

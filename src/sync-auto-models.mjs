@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
   fetchProviderCatalog,
   normalizeModelCatalog,
+  normalizeModelCatalogRecords,
 } from "./model-discovery.mjs";
 import { PROVIDERS, STATIC_MODELS } from "./model-registry.mjs";
 import {
@@ -77,7 +78,7 @@ function catalogMetadata(metadata = {}) {
   return result;
 }
 
-export function mergeDiscoveredModels(providerId, discovered, metadata = {}) {
+export function mergeDiscoveredModels(providerId, discovered, metadata = {}, rankingRecords = discovered) {
   const provider = PROVIDERS.get(providerId);
   if (!provider?.modelDiscovery?.endpoint) {
     throw new Error(`Provider ${providerId} does not declare a model-discovery endpoint.`);
@@ -108,7 +109,12 @@ export function mergeDiscoveredModels(providerId, discovered, metadata = {}) {
     .filter((id) => !registered.has(id) && !manualIds.has(id))
     .sort();
   const discoveredIds = new Set(ids);
-  const pickerIds = pickerModelIds(providerId, filtered);
+  const filteredSet = new Set(filtered);
+  const rankingInput = [...rankingRecords].filter((record) => {
+    const id = typeof record === "string" ? record : String(record?.id || "");
+    return filteredSet.has(id);
+  });
+  const pickerIds = pickerModelIds(providerId, rankingInput);
   const provenance = catalogMetadata(metadata);
   const retained = existing
     .filter(
@@ -185,6 +191,7 @@ async function fetchWithBackoff(provider, fetchCatalog, sleep) {
       const source = payload?.discovered !== undefined ? payload.discovered : payload;
       return {
         models: normalizeModelCatalog(source),
+        records: normalizeModelCatalogRecords(source),
         attempts: attempt + 1,
       };
     } catch (error) {
@@ -264,6 +271,7 @@ export async function syncEnabledProviderCatalogs({
     let catalogModels = previousRecord && previousRecord.state !== "invalid"
       ? previousRecord.models
       : undefined;
+    let rankingRecords = catalogModels;
     let attempts = 0;
     let error;
     let cause;
@@ -271,6 +279,7 @@ export async function syncEnabledProviderCatalogs({
       const fetched = await fetchWithBackoff(provider, fetchCatalog, sleep);
       attempts = fetched.attempts;
       catalogModels = fetched.models;
+      rankingRecords = fetched.records;
       writeProviderLkg(provider.id, {
         models: catalogModels,
         fetchedAt: new Date(clock).toISOString(),
@@ -284,12 +293,13 @@ export async function syncEnabledProviderCatalogs({
       catalogModels = previousRecord && previousRecord.state !== "invalid"
         ? previousRecord.models
         : undefined;
+      rankingRecords = catalogModels;
     }
 
     const filtered = filteredDiscoveredModelIds(provider, catalogModels || []);
     const merged = catalogModels === undefined
       ? { changed: false, path: undefined, models: existingAutoModelEntries(provider.id).length }
-      : mergeDiscoveredModels(provider.id, catalogModels, record);
+      : mergeDiscoveredModels(provider.id, catalogModels, record, rankingRecords);
     const entries = catalogModels === undefined
       ? existingAutoModelEntries(provider.id)
       : modelEntries(provider.id, filtered);

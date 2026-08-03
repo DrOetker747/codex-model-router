@@ -23,6 +23,37 @@ test("model catalogs normalize duplicate ids and preserve qwen3.8-max", async ()
   );
 });
 
+test("model catalog records preserve safe ranking metadata only", async () => {
+  const { normalizeModelCatalogRecords } = await import("../src/model-discovery.mjs");
+  assert.deepEqual(
+    normalizeModelCatalogRecords({
+      data: [
+        {
+          id: " kimi-k3-code ",
+          created: "2026-08-03T10:00:00.000Z",
+          provider: " OpenCode-Go ",
+          priority: 7,
+          capabilities: { tools: true, vision: false, reasoning: true },
+          api_key: "must-not-survive",
+          credential: { token: "must-not-survive" },
+          nested: { unsafe: true },
+        },
+        { id: "grok-4.10", created: "not-a-date", priority: "high" },
+      ],
+    }),
+    [
+      { id: "grok-4.10" },
+      {
+        id: "kimi-k3-code",
+        created: "2026-08-03T10:00:00.000Z",
+        provider: "opencode-go",
+        priority: 7,
+        capabilities: ["reasoning", "tools"],
+      },
+    ],
+  );
+});
+
 test("provider catalog fetch reports invalid JSON, timeout, and non-2xx responses", async () => {
   const { fetchProviderCatalog } = await import("../src/model-discovery.mjs");
 

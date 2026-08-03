@@ -178,6 +178,72 @@ test("selects latest SOTA models for every enabled provider and hides older mode
   }
 });
 
+test("fresh sync uses safe created metadata for a same-version SOTA tie", async () => {
+  const dynamicProvider = {
+    id: "fixture-created-provider",
+    displayName: "Fixture Created Provider",
+    kind: "openai-compatible",
+    ownedBy: "fixture",
+    baseUrl: "https://fixture.invalid/v1",
+    modelDiscovery: { endpoint: "/models" },
+    credential: { environment: [], file: "fixture.secret" },
+  };
+  PROVIDERS.set(dynamicProvider.id, Object.freeze(dynamicProvider));
+  writeUserModels([]);
+  try {
+    await syncEnabledProviderCatalogs({
+      enabledProviders: [dynamicProvider.id],
+      fetchCatalog: async () => ({ data: [
+        { id: "kimi-k7-alpha", created: "2026-08-01T00:00:00.000Z" },
+        { id: "kimi-k7-beta", created: "2026-08-02T00:00:00.000Z" },
+      ] }),
+      now: () => Date.parse("2026-08-03T10:00:00.000Z"),
+      sleep: async () => {},
+    });
+
+    const byId = new Map(readUserModels().map((model) => [model.upstreamModel, model]));
+    assert.equal(byId.get("kimi-k7-alpha")?.pickerVisibility, "hide");
+    assert.equal(byId.get("kimi-k7-beta")?.pickerVisibility, "list");
+  } finally {
+    PROVIDERS.delete(dynamicProvider.id);
+    writeUserModels([]);
+  }
+});
+
+test("LKG string ids still select the latest numeric version", async () => {
+  const dynamicProvider = {
+    id: "fixture-lkg-ranking-provider",
+    displayName: "Fixture LKG Ranking Provider",
+    kind: "openai-compatible",
+    ownedBy: "fixture",
+    baseUrl: "https://fixture.invalid/v1",
+    modelDiscovery: { endpoint: "/models" },
+    credential: { environment: [], file: "fixture.secret" },
+  };
+  PROVIDERS.set(dynamicProvider.id, Object.freeze(dynamicProvider));
+  writeUserModels([]);
+  writeProviderLkg(dynamicProvider.id, {
+    models: ["grok-4.9", "grok-4.10"],
+    fetchedAt: "2026-08-03T09:59:00.000Z",
+  });
+  try {
+    await syncEnabledProviderCatalogs({
+      enabledProviders: [dynamicProvider.id],
+      fetchCatalog: async () => { throw new Error("catalog timeout"); },
+      now: () => Date.parse("2026-08-03T10:00:00.000Z"),
+      sleep: async () => {},
+    });
+
+    const byId = new Map(readUserModels().map((model) => [model.upstreamModel, model]));
+    assert.equal(byId.get("grok-4.9")?.pickerVisibility, "hide");
+    assert.equal(byId.get("grok-4.10")?.pickerVisibility, "list");
+  } finally {
+    PROVIDERS.delete(dynamicProvider.id);
+    writeUserModels([]);
+    unlinkSync(providerLkgPath(dynamicProvider.id));
+  }
+});
+
 test("retains missing and unknown routes but hides them from SOTA", async () => {
   const dynamicProvider = {
     id: "fixture-retention-provider",
