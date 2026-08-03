@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { readInstallManifest } from "./install-manifest.mjs";
 import { SOURCE_ROOT, TARGET } from "./paths.mjs";
 
+export const CATALOG_SYNC_UPDATE_BUDGET_MS = 2_000;
+
 function git(args, options = {}) {
   const output = execFileSync("git", ["-C", SOURCE_ROOT, ...args], {
     encoding: "utf8",
@@ -73,14 +75,16 @@ function installCurrentCheckout() {
   }
 }
 
-function syncAutoModels() {
-  const result = spawnSync(process.execPath, [
+export function syncAutoModels({ spawn: spawnCommand = spawnSync, timeoutMs = CATALOG_SYNC_UPDATE_BUDGET_MS } = {}) {
+  const result = spawnCommand(process.execPath, [
     path.join(SOURCE_ROOT, "src", "sync-auto-models.mjs"),
   ], {
     cwd: SOURCE_ROOT,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "inherit"],
     env: { ...process.env, MODEL_ROUTER_TARGET: TARGET },
+    timeout: timeoutMs,
+    killSignal: "SIGTERM",
   });
   if (result.error || result.status !== 0) return false;
   try {

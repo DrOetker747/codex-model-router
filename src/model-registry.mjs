@@ -55,6 +55,16 @@ function loadRegistry() {
       if (provider.protocol !== undefined && !["openai", "anthropic"].includes(provider.protocol)) {
         fail(`provider ${provider.id} has an unsupported API protocol`);
       }
+      if (provider.modelDiscovery !== undefined) {
+        if (
+          !provider.modelDiscovery ||
+          typeof provider.modelDiscovery !== "object" ||
+          typeof provider.modelDiscovery.endpoint !== "string" ||
+          !provider.modelDiscovery.endpoint.startsWith("/")
+        ) {
+          fail(`provider ${provider.id} has invalid modelDiscovery metadata`);
+        }
+      }
       if (provider.modelAllowPatterns !== undefined) {
         if (
           !Array.isArray(provider.modelAllowPatterns) ||

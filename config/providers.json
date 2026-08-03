@@ -377,7 +377,9 @@
       "ownedBy": "opencode",
       "baseUrl": "https://opencode.ai/zen/go/v1",
       "baseUrlEnv": "OPENCODE_GO_BASE_URL",
-      "autoSyncModels": true,
+      "modelDiscovery": {
+        "endpoint": "/models"
+      },
       "anthropicModelPrefixes": [
         "minimax-",
         "qwen"
@@ -407,7 +409,9 @@
       "ownedBy": "opencode",
       "baseUrl": "https://opencode.ai/zen/v1",
       "baseUrlEnv": "OPENCODE_FREE_BASE_URL",
-      "autoSyncModels": true,
+      "modelDiscovery": {
+        "endpoint": "/models"
+      },
       "modelAllowPatterns": [
         "^big-pickle$",
         "-free$"

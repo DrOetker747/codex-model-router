@@ -36,7 +36,11 @@ test("provider catalog fetch reports invalid JSON, timeout, and non-2xx response
         },
       }),
     }),
-    /invalid JSON/i,
+    (error) => {
+      assert.match(error.message, /invalid JSON/i);
+      assert.match(error.cause?.message || "", /invalid json/i);
+      return true;
+    },
   );
   await assert.rejects(
     fetchProviderCatalog("opencode-go", {
@@ -44,7 +48,11 @@ test("provider catalog fetch reports invalid JSON, timeout, and non-2xx response
         throw new DOMException("timed out", "TimeoutError");
       },
     }),
-    /timed out|timeout/i,
+    (error) => {
+      assert.match(error.message, /timed out|timeout/i);
+      assert.equal(error.cause?.name, "TimeoutError");
+      return true;
+    },
   );
   await assert.rejects(
     fetchProviderCatalog("opencode-go", {
@@ -55,6 +63,19 @@ test("provider catalog fetch reports invalid JSON, timeout, and non-2xx response
       }),
     }),
     /503|temporarily unavailable/i,
+  );
+});
+
+test("live discovery requires explicit endpoint capability metadata", async () => {
+  const { fetchProviderCatalog } = await import("../src/model-discovery.mjs");
+  await assert.rejects(
+    fetchProviderCatalog({
+      id: "static-provider",
+      displayName: "Static Provider",
+      kind: "openai-compatible",
+      baseUrl: "https://static.invalid/v1",
+    }, { fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: [] }) }) }),
+    /endpoint capability/i,
   );
 });
 

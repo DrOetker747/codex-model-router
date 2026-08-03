@@ -33,6 +33,15 @@ function providerFor(providerOrId) {
   return provider;
 }
 
+function diagnosticCause(error, fallback = "provider catalog request failed") {
+  const message = String(error?.message || error || fallback)
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/(?:api[-_ ]?key|token|secret)[=: ]+\S+/gi, "$1 [redacted]");
+  const cause = new Error(message || fallback);
+  cause.name = error?.name || "Error";
+  return cause;
+}
+
 export async function fetchProviderCatalog(providerOrId, options = {}) {
   const provider = providerFor(providerOrId);
   if (provider.kind !== "openai-compatible") {
@@ -42,9 +51,16 @@ export async function fetchProviderCatalog(providerOrId, options = {}) {
   if (fixture) {
     try {
       return JSON.parse(readFileSync(path.resolve(fixture), "utf8"));
-    } catch {
-      throw new Error(`Provider ${provider.id} returned invalid JSON.`);
+    } catch (error) {
+      throw new Error(`Provider ${provider.id} returned invalid JSON.`, {
+        cause: diagnosticCause(error, "invalid JSON"),
+      });
     }
+  }
+
+  const endpoint = String(provider.modelDiscovery?.endpoint || "").trim();
+  if (!endpoint.startsWith("/")) {
+    throw new Error(`Provider ${provider.id} has no safe model-discovery endpoint capability.`);
   }
 
   const injectedFetch = typeof options.fetchImpl === "function";
@@ -76,9 +92,15 @@ export async function fetchProviderCatalog(providerOrId, options = {}) {
     });
   } catch (error) {
     if (timedOut || error?.name === "AbortError" || error?.name === "TimeoutError") {
-      throw new Error(`Provider ${provider.id} catalog request timed out.`);
+      const cause = timedOut
+        ? diagnosticCause(new Error("request timeout"), "request timeout")
+        : diagnosticCause(error, "request timeout");
+      cause.name = "TimeoutError";
+      throw new Error(`Provider ${provider.id} catalog request timed out.`, { cause });
     }
-    throw new Error(`Provider ${provider.id} catalog request failed.`);
+    throw new Error(`Provider ${provider.id} catalog request failed.`, {
+      cause: diagnosticCause(error),
+    });
   } finally {
     clearTimeout(timer);
   }
@@ -88,11 +110,16 @@ export async function fetchProviderCatalog(providerOrId, options = {}) {
   let payload;
   try {
     payload = await response.json();
-  } catch {
-    throw new Error(`Provider ${provider.id} returned invalid JSON.`);
+  } catch (error) {
+    throw new Error(`Provider ${provider.id} returned invalid JSON.`, {
+      cause: diagnosticCause(error, "invalid JSON"),
+    });
   }
   if (!responseOk) {
-    throw new Error(`Provider model discovery returned HTTP ${response?.status ?? "unknown"}.`);
+    const status = response?.status ?? "unknown";
+    throw new Error(`Provider model discovery returned HTTP ${status}.`, {
+      cause: diagnosticCause(new Error(`HTTP ${status}`)),
+    });
   }
   return payload;
 }

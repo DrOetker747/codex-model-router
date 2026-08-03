@@ -130,8 +130,8 @@ function catalogMetadata(metadata = {}) {
 
 export function mergeDiscoveredModels(providerId, discovered, metadata = {}) {
   const provider = PROVIDERS.get(providerId);
-  if (!provider?.autoSyncModels) {
-    throw new Error(`Provider ${providerId} does not enable automatic model sync.`);
+  if (!provider?.modelDiscovery?.endpoint) {
+    throw new Error(`Provider ${providerId} does not declare a model-discovery endpoint.`);
   }
   const registered = new Set(
     STATIC_MODELS.filter((model) => model.provider === providerId).map(
@@ -208,7 +208,7 @@ function providerCandidates(enabledProviders, explicit) {
       if (!provider) throw new Error(`Unknown provider: ${providerId}`);
       return provider;
     })
-    .filter((provider) => provider.autoSyncModels)
+    .filter((provider) => provider.modelDiscovery?.endpoint)
     .filter(
       (provider) =>
         explicit || credentialStatus(provider, { persistent: true }).configured,
@@ -246,13 +246,30 @@ async function fetchWithBackoff(provider, fetchCatalog, sleep) {
 }
 
 function failureMessage(error) {
-  if (error?.message && /timed out|timeout/i.test(error.message)) {
+  const cause = failureCause(error);
+  if (/timed out|timeout/i.test(cause)) {
     return `Provider catalog request timed out after ${CATALOG_SYNC_MAX_ATTEMPTS} attempts.`;
   }
-  if (error?.message && /invalid json/i.test(error.message)) {
+  if (/invalid json/i.test(cause)) {
     return "Provider catalog returned invalid JSON after retries.";
   }
-  return "Provider catalog was unavailable after retries.";
+  return `Provider catalog was unavailable after retries: ${cause}`;
+}
+
+function failureCause(error) {
+  const messages = [];
+  const seen = new Set();
+  let current = error;
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    if (current.message) messages.push(String(current.message));
+    current = current.cause;
+  }
+  return messages
+    .join("; ")
+    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/(?:api[-_ ]?key|token|secret)[=: ]+\S+/gi, "$1 [redacted]") ||
+    "unknown provider catalog failure";
 }
 
 function modelEntries(providerId, modelIds) {
@@ -262,6 +279,12 @@ function modelEntries(providerId, modelIds) {
       model.provider === providerId &&
       model.autoDiscovered === providerId &&
       wanted.has(model.upstreamModel),
+  );
+}
+
+function existingAutoModelEntries(providerId) {
+  return readUserModels().filter(
+    (model) => model.provider === providerId && model.autoDiscovered === providerId,
   );
 }
 
@@ -278,10 +301,14 @@ export async function syncEnabledProviderCatalogs({
   const lkg = {};
 
   for (const provider of providerCandidates(enabledProviders, explicit)) {
-    let record = readProviderLkg(provider.id, { now: clock });
-    let catalogModels = record?.state === "invalid" ? [] : record?.models || [];
+    const previousRecord = readProviderLkg(provider.id, { now: clock });
+    let record = previousRecord;
+    let catalogModels = previousRecord && previousRecord.state !== "invalid"
+      ? previousRecord.models
+      : undefined;
     let attempts = 0;
     let error;
+    let cause;
     try {
       const fetched = await fetchWithBackoff(provider, fetchCatalog, sleep);
       attempts = fetched.attempts;
@@ -294,13 +321,20 @@ export async function syncEnabledProviderCatalogs({
     } catch (fetchError) {
       attempts = fetchError?.attempts || CATALOG_SYNC_MAX_ATTEMPTS;
       error = failureMessage(fetchError);
-      record = unavailableLkg(record, { now: clock });
-      catalogModels = record.state === "invalid" ? [] : record.models;
+      cause = failureCause(fetchError);
+      record = unavailableLkg(previousRecord, { now: clock });
+      catalogModels = previousRecord && previousRecord.state !== "invalid"
+        ? previousRecord.models
+        : undefined;
     }
 
-    const filtered = filteredDiscoveredModelIds(provider, catalogModels);
-    const merged = mergeDiscoveredModels(provider.id, catalogModels, record);
-    const entries = modelEntries(provider.id, filtered);
+    const filtered = filteredDiscoveredModelIds(provider, catalogModels || []);
+    const merged = catalogModels === undefined
+      ? { changed: false, path: undefined, models: existingAutoModelEntries(provider.id).length }
+      : mergeDiscoveredModels(provider.id, catalogModels, record);
+    const entries = catalogModels === undefined
+      ? existingAutoModelEntries(provider.id)
+      : modelEntries(provider.id, filtered);
     models.push(...entries);
     const result = {
       provider: provider.id,
@@ -312,6 +346,7 @@ export async function syncEnabledProviderCatalogs({
     };
     if (merged.path) result.path = merged.path;
     if (error) result.error = error;
+    if (cause) result.cause = cause;
     providers.push(result);
     lkg[provider.id] = record;
   }
@@ -321,8 +356,8 @@ export async function syncEnabledProviderCatalogs({
 
 export async function syncProvider(providerId, options = {}) {
   if (!PROVIDERS.has(providerId)) throw new Error(`Unknown provider: ${providerId}`);
-  if (!PROVIDERS.get(providerId).autoSyncModels) {
-    throw new Error(`Provider ${providerId} does not enable automatic model sync.`);
+  if (!PROVIDERS.get(providerId).modelDiscovery?.endpoint) {
+    throw new Error(`Provider ${providerId} does not declare a model-discovery endpoint.`);
   }
   const result = await syncEnabledProviderCatalogs({
     enabledProviders: [providerId],
@@ -336,7 +371,7 @@ export async function syncProvider(providerId, options = {}) {
 async function main() {
   if (process.argv.includes("--help")) {
     process.stdout.write(
-      "Usage: sync-auto-models.mjs [PROVIDER]\nSyncs providers marked autoSyncModels from their read-only /models catalog.\n",
+      "Usage: sync-auto-models.mjs [PROVIDER]\nSyncs enabled providers with declared model-discovery capabilities.\n",
     );
     return;
   }

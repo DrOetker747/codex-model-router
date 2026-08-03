@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   currentCheckoutInstaller,
   installationNeedsRefresh,
+  syncAutoModels,
   updateStrategy,
 } from "../src/update.mjs";
 
@@ -37,4 +38,18 @@ test("updates preserve a clean local provider extension", () => {
   assert.equal(updateStrategy(2, 0), "current");
   assert.equal(updateStrategy(0, 3), "fast-forward");
   assert.equal(updateStrategy(2, 3), "rebase");
+});
+
+test("update catalog sync has a strict best-effort time budget", () => {
+  let options;
+  const result = syncAutoModels({
+    spawn: (_command, _args, spawnOptions) => {
+      options = spawnOptions;
+      return { status: null, error: new Error("catalog sync budget expired") };
+    },
+  });
+  assert.equal(result, false);
+  assert.ok(Number.isInteger(options.timeout));
+  assert.ok(options.timeout <= 5_000);
+  assert.equal(options.killSignal, "SIGTERM");
 });

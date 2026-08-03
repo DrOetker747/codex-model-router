@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,6 +10,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const functionStateDir = mkdtempSync(path.join(os.tmpdir(), "enabled-provider-sync-"));
 process.env.MODEL_ROUTER_STATE_DIR = functionStateDir;
 const { syncEnabledProviderCatalogs } = await import("../src/sync-auto-models.mjs");
+const { PROVIDERS } = await import("../src/model-registry.mjs");
+const { providerLkgPath, writeProviderLkg } = await import("../src/catalog-lkg.mjs");
+const { readUserModels, userModelEntry, writeUserModels } = await import("../src/user-models.mjs");
 
 test.after(() => rmSync(functionStateDir, { recursive: true, force: true }));
 
@@ -65,6 +68,76 @@ test("retries a failed catalog with bounded backoff and preserves the previous L
   assert.deepEqual(failed.lkg["opencode-go"].models, ["qwen3.8-max"]);
   assert.equal(failed.lkg["opencode-go"].state, "unavailable");
   assert.ok(failed.models.some((model) => model.upstreamModel === "qwen3.8-max"));
+});
+
+test("uses declared discovery capability for a new enabled provider and preserves static providers", async () => {
+  const dynamicProvider = {
+    id: "fixture-dynamic-provider",
+    displayName: "Fixture Dynamic Provider",
+    kind: "openai-compatible",
+    ownedBy: "fixture",
+    baseUrl: "https://fixture.invalid/v1",
+    modelDiscovery: { endpoint: "/models" },
+    credential: { environment: [], file: "fixture.secret" },
+  };
+  PROVIDERS.set(dynamicProvider.id, Object.freeze(dynamicProvider));
+  const staticEntry = userModelEntry({
+    providerId: "deepseek",
+    upstreamId: "deepseek-existing",
+    priority: 100,
+  });
+  writeUserModels([staticEntry]);
+  const calls = [];
+  try {
+    const result = await syncEnabledProviderCatalogs({
+      enabledProviders: [dynamicProvider.id, "deepseek"],
+      fetchCatalog: async (providerId) => {
+        calls.push(providerId);
+        return { data: [{ id: "qwen3.8-max" }] };
+      },
+      now: () => Date.parse("2026-08-03T10:00:00.000Z"),
+      sleep: async () => {},
+    });
+    assert.deepEqual(calls, [dynamicProvider.id]);
+    assert.ok(result.models.some((model) => model.provider === dynamicProvider.id));
+    assert.deepEqual(readUserModels().find((model) => model.provider === "deepseek"), staticEntry);
+  } finally {
+    PROVIDERS.delete(dynamicProvider.id);
+  }
+});
+
+test("missing or invalid LKG never removes existing selected user models", async () => {
+  const existing = userModelEntry({
+    providerId: "opencode-go",
+    upstreamId: "qwen3.8-max",
+    priority: 100,
+    autoDiscovered: "opencode-go",
+    pickerVisibility: "list",
+  });
+  for (const mode of ["missing", "invalid"]) {
+    writeUserModels([existing]);
+    writeProviderLkg("opencode-go", {
+      models: ["qwen3.8-max"],
+      fetchedAt: "2026-08-03T10:00:00.000Z",
+    });
+    if (mode === "missing") {
+      unlinkSync(providerLkgPath("opencode-go"));
+    } else {
+      writeFileSync(providerLkgPath("opencode-go"), "{invalid\n", "utf8");
+    }
+
+    const result = await syncEnabledProviderCatalogs({
+      enabledProviders: ["opencode-go"],
+      fetchCatalog: async () => {
+        throw new Error("catalog timeout");
+      },
+      now: () => Date.parse("2026-08-03T10:01:00.000Z"),
+      sleep: async () => {},
+    });
+    assert.deepEqual(readUserModels(), [existing]);
+    assert.equal(result.providers[0].changed, false);
+    assert.equal(readUserModels()[0].pickerVisibility, "list");
+  }
 });
 
 test("OpenCode Go catalog sync adds every new model with the correct protocol", () => {
