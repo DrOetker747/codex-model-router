@@ -4,7 +4,10 @@ import path from "node:path";
 
 import { validCallerSecret } from "./caller-auth.mjs";
 import { findCodexBinary } from "./codex-binary.mjs";
-import { routedCodexAgentStatus } from "./codex-agent-catalog.mjs";
+import {
+  routedCodexAgentStatus,
+  selectedExternalSubagentModels,
+} from "./codex-agent-catalog.mjs";
 import { privateFileIsProtected } from "./file-security.mjs";
 import { grokCliPreflight } from "./grok-cli.mjs";
 import { detectLegacyInstallations } from "./legacy-migration.mjs";
@@ -25,7 +28,6 @@ import {
 import { credentialStatus } from "./provider-credentials.mjs";
 import {
   providerSelectionStatus,
-  selectedConfiguredListedModels,
 } from "./provider-selection.mjs";
 
 const checks = [];
@@ -156,8 +158,6 @@ let requiredRoutedModels = [];
 let requiredModels = new Set();
 try {
   selection = providerSelectionStatus();
-  requiredRoutedModels = selectedConfiguredListedModels();
-  requiredModels = new Set(requiredRoutedModels.map((model) => model.slug));
   add(
     selection.providers.length ? "ok" : "fail",
     "Enabled providers",
@@ -182,6 +182,10 @@ try {
 } catch {
   // Reported as a failed catalog check below.
 }
+requiredRoutedModels = selectedExternalSubagentModels({
+  mergedCatalog: { models: catalogModels },
+});
+requiredModels = new Set(requiredRoutedModels.map((model) => model.slug));
 const catalogOk =
   requiredModels.size > 0 &&
   [...requiredModels].every((slug) => catalogModels.some((model) => model.slug === slug));

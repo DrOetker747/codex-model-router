@@ -8,9 +8,11 @@ import {
   MAX_SELECTED_EXTERNAL_PROFILES,
   preserveNativeAgentProfiles,
   readSelectedExternalAgentProfiles,
+  readVerifiedExternalAgentProfiles,
   rebuildExternalSubagentProfiles,
   routedAgentDefinition,
   routedCodexAgentStatus,
+  selectedExternalSubagentModels,
   syncRoutedCodexAgents,
   writeSelectedExternalAgentProfiles,
 } from "../src/codex-agent-catalog.mjs";
@@ -218,4 +220,61 @@ test("selected external profile state is atomic, canonical, and bounded", () => 
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
   }
+});
+
+test("catalog tool-call metadata stays catalog-only and protected verification is explicit", () => {
+  const agentsDir = mkdtempSync(path.join(os.tmpdir(), "codex-router-verification-"));
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "codex-router-verification-state-"));
+  const verificationPath = path.join(stateDir, "verified-external-agents.json");
+  const model = { ...qwen, capabilities: ["tool-calls"], supportsToolCalls: true };
+  try {
+    assert.deepEqual([...readVerifiedExternalAgentProfiles(verificationPath)], []);
+    const catalogOnly = rebuildExternalSubagentProfiles({
+      mergedCatalog: { models: [model] },
+      selectedProfiles: [],
+      agentsDir,
+      verifiedProfiles: [],
+    });
+    assert.equal(catalogOnly.externalProfiles[0].status, "catalog-only");
+    writeFileSync(
+      verificationPath,
+      `${JSON.stringify({
+        version: 1,
+        records: [{
+          slug: model.slug,
+          verified: true,
+          method: "meaningful-text-tool-call",
+          recordId: "test-record",
+        }],
+      })}\n`,
+      { mode: 0o600 },
+    );
+    const verified = readVerifiedExternalAgentProfiles(verificationPath);
+    assert.deepEqual([...verified], [model.slug]);
+    const rebuilt = rebuildExternalSubagentProfiles({
+      mergedCatalog: { models: [model] },
+      selectedProfiles: [],
+      agentsDir,
+      verifiedProfiles: verified,
+    });
+    assert.equal(rebuilt.externalProfiles[0].status, "verified");
+  } finally {
+    rmSync(agentsDir, { recursive: true, force: true });
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("bounded external model helper matches rebuild visibility and explicit selection", () => {
+  const mergedCatalog = { models: [qwen, hiddenDeepSeek] };
+  assert.deepEqual(
+    selectedExternalSubagentModels({ mergedCatalog, selectedProfiles: [] }).map((model) => model.slug),
+    [qwen.slug],
+  );
+  assert.deepEqual(
+    selectedExternalSubagentModels({
+      mergedCatalog,
+      selectedProfiles: [hiddenDeepSeek.slug],
+    }).map((model) => model.slug),
+    [hiddenDeepSeek.slug, qwen.slug],
+  );
 });

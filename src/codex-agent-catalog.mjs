@@ -22,6 +22,10 @@ export const EXTERNAL_AGENT_SELECTION_PATH =
   process.env.MODEL_ROUTER_EXTERNAL_AGENT_SELECTION_PATH ||
   process.env.CODEX_ROUTER_EXTERNAL_AGENT_SELECTION_PATH ||
   path.join(STATE_DIR, "selected-external-agents.json");
+export const VERIFIED_EXTERNAL_AGENT_RECORD_PATH =
+  process.env.MODEL_ROUTER_VERIFIED_EXTERNAL_AGENT_RECORD_PATH ||
+  process.env.CODEX_ROUTER_VERIFIED_EXTERNAL_AGENT_RECORD_PATH ||
+  path.join(STATE_DIR, "verified-external-agents.json");
 
 function safeIdentifier(value, separator) {
   return String(value)
@@ -97,6 +101,44 @@ export function writeSelectedExternalAgentProfiles(
   return profiles;
 }
 
+export function verifiedExternalAgentProfilesFromRecord(record) {
+  if (record?.version !== 1 || !Array.isArray(record.records)) {
+    throw new Error("Invalid external agent verification record.");
+  }
+  const profiles = record.records
+    .filter(
+      (item) =>
+        item &&
+        item.verified === true &&
+        item.method === "meaningful-text-tool-call" &&
+        typeof item.recordId === "string" &&
+        item.recordId,
+    )
+    .map((item) => canonicalProfileSlug(item.slug));
+  return new Set(profiles);
+}
+
+// This is intentionally read-only. A verification record must be produced by
+// a separate protected meaningful text plus tool-call test, not by catalog
+// metadata or by this rebuild operation.
+export function readVerifiedExternalAgentProfiles(
+  target = VERIFIED_EXTERNAL_AGENT_RECORD_PATH,
+) {
+  if (!existsSync(target)) return new Set();
+  if (!privateFileIsProtected(target)) {
+    throw new Error(`Refusing to read unprotected external agent verification record ${target}.`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(target, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `Invalid external agent verification record ${target}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return verifiedExternalAgentProfilesFromRecord(parsed);
+}
+
 function catalogModels(catalog) {
   if (Array.isArray(catalog)) return catalog;
   if (Array.isArray(catalog?.models)) return catalog.models;
@@ -129,30 +171,6 @@ export function preserveNativeAgentProfiles(existingCatalog) {
   };
 }
 
-function toolCallsVerified(model) {
-  if (
-    model?.toolCalls === true ||
-    model?.supportsToolCalls === true ||
-    model?.tool_call === true ||
-    model?.tool_call_capability === "verified" ||
-    model?.toolCallsStatus === "verified"
-  ) return true;
-  const capabilities = model?.capabilities;
-  if (Array.isArray(capabilities)) {
-    return capabilities.some((value) => /tool[-_ ]?calls?/i.test(String(value)));
-  }
-  if (capabilities && typeof capabilities === "object") {
-    return Object.entries(capabilities).some(
-      ([key, value]) => value === true && /tool[-_ ]?calls?/i.test(key),
-    );
-  }
-  return false;
-}
-
-function profileVerificationStatus(model) {
-  return toolCallsVerified(model) ? "verified" : "catalog-only";
-}
-
 function managedFile(fileName) {
   return /^router-model-[a-z0-9-]+\.toml$/.test(fileName);
 }
@@ -162,6 +180,40 @@ function sortedModels(models) {
     Number(left.priority ?? 999) - Number(right.priority ?? 999) ||
     String(left.slug).localeCompare(String(right.slug)),
   );
+}
+
+function verifiedProfileSet(values) {
+  if (values instanceof Set) return new Set(values);
+  if (values === undefined) return readVerifiedExternalAgentProfiles();
+  return new Set(normalizeSelectedProfiles(values));
+}
+
+// Rebuild and doctor use this one bounded selection algorithm. It is based on
+// the exact merged catalog exposed to the switcher.
+export function selectedExternalSubagentModels({
+  mergedCatalog,
+  selectedProfiles,
+} = {}) {
+  const models = catalogModels(mergedCatalog);
+  const selected = normalizeSelectedProfiles(
+    selectedProfiles === undefined
+      ? readSelectedExternalAgentProfiles()
+      : selectedProfiles,
+  );
+  const selectedSet = new Set(selected);
+  const compatible = models.filter((model) =>
+    isCompatibleExternalSubagent(model, { model_provider: "codex-router", model: model.slug }),
+  );
+  const visible = compatible.filter(
+    (model) => model.visibility !== "hide" && model.pickerVisibility !== "hide",
+  );
+  const bySlug = new Map(compatible.map((model) => [String(model.slug), model]));
+  const explicitModels = sortedModels(selected.map((slug) => bySlug.get(slug)).filter(Boolean));
+  const visibleModels = sortedModels(visible);
+  return [
+    ...explicitModels,
+    ...visibleModels.filter((model) => !selectedSet.has(String(model.slug))),
+  ].slice(0, MAX_EXTERNAL_AGENT_PROFILES);
 }
 
 export function routedAgentDefinition(model, status = "catalog-only") {
@@ -194,30 +246,18 @@ export function rebuildExternalSubagentProfiles({
   mergedCatalog,
   selectedProfiles,
   agentsDir = CODEX_AGENTS_DIR,
+  verifiedProfiles,
 } = {}) {
-  const models = catalogModels(mergedCatalog);
   const selected = normalizeSelectedProfiles(
     selectedProfiles === undefined
       ? readSelectedExternalAgentProfiles()
       : selectedProfiles,
   );
-  const selectedSet = new Set(selected);
-  const compatible = models.filter((model) =>
-    isCompatibleExternalSubagent(model, { model_provider: "codex-router", model: model.slug }),
-  );
-  const visible = compatible.filter(
-    (model) => model.visibility !== "hide" && model.pickerVisibility !== "hide",
-  );
-  const bySlug = new Map(compatible.map((model) => [String(model.slug), model]));
-  const selectedModels = selected
-    .map((slug) => bySlug.get(slug))
-    .filter(Boolean);
-  const visibleModels = sortedModels(visible);
-  const explicitModels = sortedModels(selectedModels);
-  const ordered = [
-    ...explicitModels,
-    ...visibleModels.filter((model) => !selectedSet.has(String(model.slug))),
-  ].slice(0, MAX_EXTERNAL_AGENT_PROFILES);
+  const ordered = selectedExternalSubagentModels({
+    mergedCatalog,
+    selectedProfiles: selected,
+  });
+  const verifiedSet = verifiedProfileSet(verifiedProfiles);
   const desired = new Set(ordered.map((model) => routedAgentDefinition(model).fileName));
 
   mkdirSync(agentsDir, { recursive: true, mode: 0o700 });
@@ -234,7 +274,7 @@ export function rebuildExternalSubagentProfiles({
   }
 
   const externalProfiles = ordered.map((model) => {
-    const status = profileVerificationStatus(model);
+    const status = verifiedSet.has(String(model.slug)) ? "verified" : "catalog-only";
     const definition = routedAgentDefinition(model, status);
     const target = path.join(agentsDir, definition.fileName);
     let managed = true;
@@ -318,7 +358,8 @@ export function syncRoutedCodexAgents(models, agentsDir = CODEX_AGENTS_DIR) {
 }
 
 export function routedCodexAgentStatus(models, agentsDir = CODEX_AGENTS_DIR) {
-  const status = {
+  const verifiedProfiles = readVerifiedExternalAgentProfiles();
+  const result = {
     expected: models.length,
     current: 0,
     missing: [],
@@ -326,31 +367,32 @@ export function routedCodexAgentStatus(models, agentsDir = CODEX_AGENTS_DIR) {
     unprotected: [],
   };
   for (const model of models) {
-    const definition = routedAgentDefinition(model);
+    const verificationStatus = verifiedProfiles.has(String(model.slug)) ? "verified" : "catalog-only";
+    const definition = routedAgentDefinition(model, verificationStatus);
     const target = path.join(agentsDir, definition.fileName);
     if (!existsSync(target)) {
-      status.missing.push(model.slug);
+      result.missing.push(model.slug);
       continue;
     }
     let contents;
     try {
       contents = readFileSync(target, "utf8");
     } catch {
-      status.stale.push(model.slug);
+      result.stale.push(model.slug);
       continue;
     }
     if (contents !== definition.contents) {
-      status.stale.push(model.slug);
+      result.stale.push(model.slug);
       continue;
     }
     if (!privateFileIsProtected(target)) {
-      status.unprotected.push(model.slug);
+      result.unprotected.push(model.slug);
       continue;
     }
-    status.current += 1;
+    result.current += 1;
   }
   return {
-    ...status,
-    ok: status.expected > 0 && status.current === status.expected,
+    ...result,
+    ok: result.current === result.expected,
   };
 }
