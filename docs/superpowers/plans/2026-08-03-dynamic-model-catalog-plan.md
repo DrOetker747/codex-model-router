@@ -2,153 +2,175 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Synchronize enabled provider catalogs, build a deterministic merged SOTA catalog, and expose safe model selection to Codex Desktop, Model Picker, and compatible subagents.
+**Goal:** Synchronize enabled provider catalogs, generate the native Codex catalog, rank SOTA from real metadata, and expose safe external subagent routes without changing native Codex ownership.
 
-**Architecture:** The Node control plane owns discovery, validation, LKG state, merged-catalog rebuilding, SOTA ranking, and agent-profile generation. The Desktop UI and existing native macOS apps consume one snapshot and request model changes through `control`; they never edit provider or Codex configuration directly.
+**Architecture:** The Node control plane owns discovery, validation, backoff, LKG state, merged-catalog rebuilding, SOTA ranking, and external profile generation. It atomically writes `model_catalog_json` to the user Codex `config.toml`. The existing Model Picker and macOS tray consume the same snapshot; Codex Desktop is integrated only through that generated config and a full user-selected restart.
 
-**Tech Stack:** Node.js ES modules, JSON provider configuration, `node:test`, existing Codex Router control commands, SwiftUI/AppKit, Swift Package Manager, local fixtures, and free or low-cost smoke checks.
+**Tech Stack:** Node.js ES modules, JSON provider configuration, `node:test`, `launchd`, atomic file replacement, SwiftUI/AppKit, Swift Package Manager, local fixtures, and free or low-cost smoke checks.
 
 ## Global Constraints
 
-- Model Picker remains installed and remains the compact SOTA view.
-- After a graceful restart, the native Codex Desktop switcher shows native OpenAI models and current external models from the merged catalog.
-- Sync all enabled providers on every catalog refresh; a disabled provider is not fetched or merged.
-- Preserve the exact canonical model ID `qwen3.8-max` when a live provider catalog returns it.
-- SOTA ranking uses live valid catalog metadata and a stable tie-breaker. A missing model is not fabricated from a hardcoded list.
-- Each provider LKG record stores `models`, `fetchedAt`, `ageMs`, and `state` with one of `fresh`, `stale`, `unavailable`, or `invalid`.
-- A failed fetch never replaces a valid configuration. Stale data is labelled stale and is not reported as fresh.
-- Rebuild the merged catalog and only the compatible selected subagent profiles after a successful or explicitly usable LKG refresh.
-- Keep Sol and Luna as root profiles and add external models only as compatible subagent routes.
-- Keep ChatGPT login, MCP servers, skills, credentials, provider settings, and unrelated Codex configuration unchanged.
+- Preserve the existing Model Picker, including all current sections and lists. SOTA is one section.
+- Integrate the native Codex Desktop switcher only through generated `model_catalog_json` in the user `config.toml` and a full restart.
+- Synchronize every enabled provider on a regular `launchd` schedule. Apply bounded exponential backoff, a single-flight lock, and atomic LKG writes.
+- Preserve the exact canonical model ID `qwen3.8-max` when returned by a live provider.
+- Rank SOTA from real available metadata. Use provider `created` timestamps only when present; otherwise use deterministic version and family parsing under a tested policy.
+- Each provider LKG record stores `models`, `fetchedAt`, `ageMs`, and one state: `fresh`, `stale`, `unavailable`, or `invalid`.
+- A failed sync never deletes the last usable catalog or changes the selected model.
+- Preserve native OpenAI/Codex Sol and Luna models. Generate only selected compatible external subagent profiles.
+- Never restart Codex without an explicit user choice. The app shows when a newer catalog exists and that restart is required.
+- Preserve ChatGPT login, MCP servers, skills, credentials, provider settings, and unrelated Codex configuration.
 - Use local fixtures plus free or low-cost live checks. Paid live tests require explicit approval.
-- Keep this change in the current repository. A separate repository is outside this release.
-- Deliver the implementation in one final commit with message `docs: plan dynamic model catalog` for this planning change.
+- Finalization includes a new user-owned GitHub repository, upstream attribution, MIT license, secret scan, CI, release artifacts, and push only after verification.
 
-## File map
+## Verified file map
 
-- `src/model-discovery.mjs`: fetch, validate, normalize, and classify provider catalog responses.
-- `src/sync-auto-models.mjs`: synchronize every enabled provider and update provider LKG records.
-- `src/user-models.mjs`: persist canonical merged model entries and LKG metadata.
-- `src/catalog.mjs`: rebuild the merged catalog and expose stable catalog snapshots.
-- `src/model-registry.mjs`: validate provider capabilities, aliases, and catalog metadata.
-- `src/curate-models.mjs`: rank the deterministic live SOTA set.
-- `src/codex-agent-catalog.mjs`: rebuild selected compatible Sol, Luna, and external subagent profiles.
-- `src/control.mjs` and `src/config-manager.mjs`: expose safe model selection and rollback-safe writes.
-- `src/router.mjs` and `src/providers.mjs`: preserve provider enablement, credentials, and restart boundaries.
-- `apps/desktop/ui/model.mjs`: render the merged catalog in the native Desktop switcher after restart.
-- `apps/macos/ModelPicker/main.m`: retain the existing compact Model Picker and its SOTA input.
-- `apps/macos/ModelRouterTray/Sources/ModelRouterTrayApp.swift`: connect the tray to the control snapshot and restart action.
-- `apps/macos/ModelRouterTray/Sources/ModelSelectorModels.swift`: decode and filter merged model entries.
-- `test/model-discovery.test.mjs`, `test/sync-auto-models.test.mjs`, `test/user-models.test.mjs`, `test/catalog.test.mjs`: sync and LKG tests.
-- `test/codex-agent-catalog.test.mjs`, `test/control.test.mjs`, `test/desktop-ui.test.mjs`, `test/macos-model-picker.test.mjs`: profile, control, and UI tests.
+Existing repository files used by the implementation:
+
+- `src/model-discovery.mjs`: fetch, validate, normalize, and classify provider responses.
+- `src/sync-auto-models.mjs`: synchronize enabled providers.
+- `src/user-models.mjs`: persist canonical model entries.
+- `src/catalog.mjs`: build the merged catalog and snapshot.
+- `src/model-registry.mjs`: validate provider and model metadata.
+- `src/curate-models.mjs`: apply the SOTA policy.
+- `src/config-manager.mjs`: atomically write `model_catalog_json` and the next-task model to `config.toml`.
+- `src/control.mjs`, `src/router.mjs`, `src/providers.mjs`: expose control operations and preserve provider state.
+- `src/service-macos.mjs`, `src/service-operation-lock.mjs`, `src/update.mjs`: scheduling, locking, and update flow.
+- `src/codex-agent-catalog.mjs`: preserve native profiles and build selected external profiles.
+- `src/target-integration.mjs`, `src/install-manifest.mjs`, `src/tray-install.mjs`: align checkouts and install one verified commit.
+- `apps/macos/ModelPicker/main.m`, `apps/macos/ModelRouterTray/Sources/ModelRouterTrayApp.swift`, and `apps/macos/ModelRouterTray/Sources/ModelSelectorModels.swift`: consume the fresh snapshot.
+- `scripts/build-macos-model-picker.sh`, `scripts/build-macos-tray-app.sh`, and `scripts/build-desktop-tray.sh`: build release artifacts.
+- `docs/INSTALL.md`, `docs/DESKTOP-TRAY.md`, `docs/MACOS-TRAY.md`, and `README.md`: document operation and release safety.
+- `test/model-discovery.test.mjs`, `test/sync-auto-models.test.mjs`, `test/user-models.test.mjs`, `test/catalog.test.mjs`, `test/config-manager.test.mjs`, `test/control.test.mjs`, `test/codex-agent-catalog.test.mjs`, `test/macos-model-picker.test.mjs`, `test/service-operation-lock.test.mjs`, `test/update-target.test.mjs`, and `test/tray-install.test.mjs`: targeted regression coverage.
+
+New files are marked `Create` below. Each has one responsibility and is not assumed to exist.
 
 ---
 
-### Task 1: Provider sync and LKG state
+### Task 1: Enabled-provider sync, launchd schedule, and LKG
 
 **Files:**
-- Modify: `src/model-discovery.mjs`, `src/sync-auto-models.mjs`, `src/user-models.mjs`, `src/catalog.mjs`
-- Test: `test/model-discovery.test.mjs`, `test/sync-auto-models.test.mjs`, `test/user-models.test.mjs`, `test/catalog.test.mjs`
+- Modify: `src/model-discovery.mjs`, `src/sync-auto-models.mjs`, `src/user-models.mjs`, `src/service-macos.mjs`, `src/service-operation-lock.mjs`, `src/update.mjs`
+- Create: `src/catalog-lkg.mjs` for atomic LKG I/O, age calculation, and state transitions.
+- Create: `config/launchd/com.codexrouter.catalog-sync.plist` for the regular macOS sync job.
+- Test: `test/model-discovery.test.mjs`, `test/sync-auto-models.test.mjs`, `test/user-models.test.mjs`, `test/service-operation-lock.test.mjs`
+- Create: `test/catalog-lkg.test.mjs` for atomic replacement and state transitions.
 
 **Interfaces:**
 - `syncEnabledProviderCatalogs({ enabledProviders, fetchCatalog, now }) -> { providers, models, lkg }`
 - `readProviderLkg(providerId) -> { models, fetchedAt, ageMs, state } | null`
 - `writeProviderLkg(providerId, record) -> void`
-- `buildMergedCatalog(providerRecords) -> { models, providers, generatedAt }`
+- `withCatalogSingleFlight(lockPath, operation) -> Promise<Result>`
 
-- [ ] Write fixture tests for two enabled providers, one disabled provider, a valid response containing `qwen3.8-max`, an invalid response, and a fetch failure.
-- [ ] Run `node --test test/model-discovery.test.mjs test/sync-auto-models.test.mjs test/user-models.test.mjs test/catalog.test.mjs` and confirm the new assertions fail.
-- [ ] Implement normalization, enabled-provider iteration, LKG persistence, `ageMs`, and the four explicit states. Use the previous valid LKG only as labelled stale data.
-- [ ] Rebuild the merged catalog only from valid fresh data or an explicitly usable stale LKG record. Keep disabled-provider entries out of the result.
-- [ ] Run the same command and require PASS, including exact preservation of `qwen3.8-max`.
+- [ ] Add fixtures for two enabled providers, one disabled provider, `qwen3.8-max`, invalid JSON, timeout, and non-2xx response. Assert that disabled providers are not fetched.
+- [ ] Run `node --test test/model-discovery.test.mjs test/sync-auto-models.test.mjs test/user-models.test.mjs test/service-operation-lock.test.mjs test/catalog-lkg.test.mjs`; confirm the new assertions fail.
+- [ ] Implement canonical normalization, enabled-provider iteration, bounded exponential backoff, single-flight locking, and the four LKG states. Replace records with a temporary file plus `rename`, never with a partial write.
+- [ ] Install the plist through the existing macOS service path. Include a successful interval, retry backoff, and no overlapping sync process.
+- [ ] Run the same command and require PASS, including exact preservation of `qwen3.8-max` and the previous LKG after failure.
+- [ ] Commit independently: `git add src config/launchd test && git commit -m "feat: add provider LKG sync"`.
 
-### Task 2: Deterministic live-catalog SOTA ranking
+### Task 2: Deterministic SOTA ranking from available metadata
 
 **Files:**
 - Modify: `src/curate-models.mjs`, `src/catalog.mjs`, `src/model-registry.mjs`
 - Test: `test/catalog.test.mjs`, `test/model-discovery.test.mjs`
 
 **Interfaces:**
-- `rankSotaModels(liveCatalog, policy) -> Array<{ slug, rank, reason }>`
+- `parseModelFamilyAndVersion(modelId) -> { family, versionParts }`
+- `rankSotaModels(catalog, policy) -> Array<{ slug, rank, reason }>`
 - `applySotaVisibility(mergedCatalog, sotaEntries) -> mergedCatalog`
 - `compareModelRecords(a, b) -> number`
 
-- [ ] Add fixtures with native OpenAI entries, several external families, `qwen3.8-max`, an older route, duplicate IDs, and equal-priority entries. Assert that a live model is selected only once and old routes remain routable but hidden.
-- [ ] Run `node --test test/catalog.test.mjs test/model-discovery.test.mjs` and confirm the ranking assertions fail.
-- [ ] Implement one stable comparator using explicit catalog priority, capability metadata, recency, provider ID, and canonical slug as deterministic tie-breakers. Do not rank from an offline model list.
-- [ ] Recalculate visibility from the live merged catalog on every rebuild. Keep `qwen3.8-max` eligible whenever it is present and compatible.
-- [ ] Run the same command twice against the same fixture and require identical order and PASS.
+- [ ] Add fixtures with native OpenAI entries, external families, `qwen3.8-max`, a real provider `created` timestamp, a missing timestamp, malformed versions, duplicate IDs, and equal-priority entries.
+- [ ] Run `node --test test/catalog.test.mjs test/model-discovery.test.mjs`; confirm ranking assertions fail.
+- [ ] Implement a policy that uses `created` only when supplied, otherwise parses family and numeric version parts. Use explicit provider priority, capabilities, provider ID, and canonical slug as tie-breakers. Never derive recency from a fabricated timestamp.
+- [ ] Recalculate SOTA visibility from the current merged catalog. Keep older compatible routes routable and hidden rather than deleting them.
+- [ ] Run the same command twice against the same fixture and require byte-identical order and PASS.
+- [ ] Commit independently: `git add src/curate-models.mjs src/catalog.mjs src/model-registry.mjs test && git commit -m "feat: rank live model catalog deterministically"`.
 
-### Task 3: Control, selection, and graceful restart
+### Task 3: Native config catalog, selection, and full restart
 
 **Files:**
-- Modify: `src/control.mjs`, `src/config-manager.mjs`, `src/router.mjs`, `src/providers.mjs`
-- Test: `test/control.test.mjs`, `test/router-health.test.mjs`
+- Modify: `src/config-manager.mjs`, `src/control.mjs`, `src/router.mjs`, `src/providers.mjs`
+- Test: `test/config-manager.test.mjs`, `test/control.test.mjs`, `test/router-health.test.mjs`
 
 **Interfaces:**
 - `control model-catalog --json -> CatalogSnapshot`
+- `writeModelCatalogJson(snapshot) -> void`
 - `control model-set <canonicalSlug> -> SelectionResult`
 - `control codex-restart -> RestartResult`
 - `setNextTaskModel(slug, { restart }) -> SelectionResult`
 
-- [ ] Add tests for native OpenAI selection, external selection, disabled-provider enablement, failed catalog rebuild, graceful restart, and restart failure. Snapshot login, MCP, skills, provider mode, and the previous model before each test.
-- [ ] Run `node --test test/control.test.mjs test/router-health.test.mjs` and confirm the new cases fail.
-- [ ] Implement JSON catalog output, canonical-slug validation, atomic next-task model writes, provider rollback on failure, and graceful restart through the existing router path. Never pass credentials in arguments.
-- [ ] Ensure `restart: false` changes only the next-task default and `restart: true` restarts Codex only after the write succeeds. Preserve `model_provider = "openai"` where the current authenticated mode requires it.
+- [ ] Add tests for native and external entries in `model_catalog_json`, atomic `config.toml` writes, disabled-provider enablement, failed rebuild rollback, `restart: false`, and `restart: true`.
+- [ ] Snapshot the current model, provider mode, ChatGPT login, MCP configuration, skills, and protected credential paths. Assert they are unchanged after selection tests.
+- [ ] Run `node --test test/config-manager.test.mjs test/control.test.mjs test/router-health.test.mjs`; confirm the new cases fail.
+- [ ] Implement generated `model_catalog_json` in the user `config.toml`. The native switcher gets the catalog only after a full restart. Do not edit Desktop source or pass credentials in arguments.
+- [ ] Show `catalogUpdatedAt`, `restartRequired`, and the selected model in the snapshot. `restart: false` leaves Codex running; `restart: true` calls the existing graceful full-restart path only after the atomic write succeeds.
 - [ ] Run the same command and require PASS with unchanged protected-state snapshots.
+- [ ] Commit independently: `git add src test && git commit -m "feat: expose catalog through Codex config"`.
 
-### Task 4: Compatible agent profiles
+### Task 4: Native profile preservation and selected external subagents
 
 **Files:**
 - Modify: `src/codex-agent-catalog.mjs`, `src/catalog.mjs`, `src/model-registry.mjs`
 - Test: `test/codex-agent-catalog.test.mjs`, `test/catalog.test.mjs`
 
 **Interfaces:**
-- `rebuildCompatibleAgentProfiles({ mergedCatalog, selectedProfiles }) -> AgentProfileCatalog`
-- `isCompatibleSubagent(model, profile) -> boolean`
-- `rootProfiles() -> [{ id: "sol" }, { id: "luna" }]`
+- `preserveNativeAgentProfiles(existingCatalog) -> AgentProfileCatalog`
+- `rebuildExternalSubagentProfiles({ mergedCatalog, selectedProfiles }) -> AgentProfileCatalog`
+- `isCompatibleExternalSubagent(model, profile) -> boolean`
 
-- [ ] Add a fixture proving Sol and Luna remain root profiles, a compatible external model becomes a subagent route, and an incompatible model is excluded without deleting an existing route.
-- [ ] Run `node --test test/codex-agent-catalog.test.mjs test/catalog.test.mjs` and confirm the new cases fail.
-- [ ] Implement capability-based profile selection from merged live metadata. Rebuild only selected compatible profiles and retain stable root IDs, display names, and role settings.
-- [ ] Tie profile rebuild output to the same catalog generation used by the Desktop switcher and control snapshot.
-- [ ] Run the same command and require PASS with stable profile ordering and no root-profile replacement.
+- [ ] Add fixtures proving native Sol and Luna remain unchanged, a compatible external model becomes a selected subagent route, and an incompatible model is excluded.
+- [ ] Run `node --test test/codex-agent-catalog.test.mjs test/catalog.test.mjs`; confirm the new cases fail.
+- [ ] Implement capability-based external profile generation. Read native Sol and Luna from the existing Codex catalog; do not generate replacement TOML profiles for them.
+- [ ] Rebuild only selected external profiles against the same catalog generation exposed to the switcher. Keep native IDs, display names, and role settings stable.
+- [ ] Run the same command and require PASS with stable ordering and no native profile replacement.
+- [ ] Commit independently: `git add src test && git commit -m "feat: add compatible external subagents"`.
 
-### Task 5: macOS UI and Desktop integration
+### Task 5: Fresh Model Picker snapshot and macOS integration
 
 **Files:**
-- Modify: `apps/desktop/ui/model.mjs`, `apps/macos/ModelPicker/main.m`, `apps/macos/ModelRouterTray/Sources/ModelRouterTrayApp.swift`, `apps/macos/ModelRouterTray/Sources/ModelSelectorModels.swift`
-- Test: `test/desktop-ui.test.mjs`, `test/macos-model-picker.test.mjs`, `apps/macos/ModelRouterTray/Tests/ModelRouterTrayTests/ModelSelectorModelsTests.swift`
+- Modify: `apps/macos/ModelPicker/main.m`, `apps/macos/ModelRouterTray/Sources/ModelRouterTrayApp.swift`, `apps/macos/ModelRouterTray/Sources/ModelSelectorModels.swift`
+- Test: `test/macos-model-picker.test.mjs`, `apps/macos/ModelRouterTray/Tests/ModelRouterTrayTests/ModelSelectorModelsTests.swift`
 
 **Interfaces:**
 - `loadCatalogSnapshot() -> CatalogSnapshot`
-- `selectModel(slug, restart) -> SelectionResult`
 - `ModelSelectorCatalog.models(for:search:) -> [ModelSelectorEntry]`
+- `selectModel(slug, restart) -> SelectionResult`
 
-- [ ] Add fixture tests that show native OpenAI and current external entries in the Desktop switcher after a restart, while the Model Picker keeps only the SOTA view.
-- [ ] Run `node --test test/desktop-ui.test.mjs test/macos-model-picker.test.mjs` and `swift test --package-path apps/macos/ModelRouterTray`; confirm the new cases fail.
-- [ ] Implement snapshot loading, search, canonical-slug selection, `Later` and graceful `Restart`, stale-state labels, and concise errors. Keep credentials out of Swift state.
-- [ ] Keep the existing Model Picker entry point and update only its catalog input. Do not create a second picker or edit TOML/JSON directly from the apps.
-- [ ] Run the Node tests, `swift test --package-path apps/macos/ModelRouterTray`, and `swift build -c release --package-path apps/macos/ModelRouterTray`; require PASS and exit 0.
+- [ ] Add fixtures showing native OpenAI and current external entries in the Model Picker's existing sections, plus one SOTA section, with `catalogUpdatedAt` and `restartRequired` visible.
+- [ ] Run `node --test test/macos-model-picker.test.mjs` and `swift test --package-path apps/macos/ModelRouterTray`; confirm the new cases fail.
+- [ ] Feed the Model Picker and tray from the fresh control snapshot without removing existing lists or sections. Keep credentials out of Swift state.
+- [ ] Add `Later` and `Restart` actions. `Later` saves the next-task model and leaves Codex running. `Restart` performs the full graceful restart only after user choice. Show a clear notice when a newer catalog requires restart.
+- [ ] Run `node --test test/macos-model-picker.test.mjs`, `swift test --package-path apps/macos/ModelRouterTray`, and `swift build -c release --package-path apps/macos/ModelRouterTray`; require PASS and exit 0.
+- [ ] Commit independently: `git add apps/macos test && git commit -m "feat: refresh Model Picker from catalog"`.
 
-### Task 6: Release, documentation, and full tests
+### Task 6: Verified checkout, new repository, release, and documentation
 
 **Files:**
-- Modify: `README.md`, `docs/MACOS-TRAY.md`
-- Test: all targeted tests from Tasks 1 through 5 and `test/setup.test.mjs`
+- Modify: `src/target-integration.mjs`, `src/install-manifest.mjs`, `src/tray-install.mjs`, `README.md`, `docs/INSTALL.md`, `docs/DESKTOP-TRAY.md`, `docs/MACOS-TRAY.md`
+- Test: `test/update-target.test.mjs`, `test/tray-install.test.mjs`, and all targeted tests from Tasks 1 through 5
+- Create in the new target repository `codex-router-dynamic-model-catalog`: `LICENSE` with MIT text, `NOTICE.md` with upstream attribution, `.github/workflows/ci.yml` for Node/Swift tests and secret scanning, and `.github/workflows/release.yml` for verifiable build artifacts.
 
 **Interfaces:**
-- Document the user-visible catalog states, sync behavior, SOTA rules, restart flow, Sol/Luna roots, and safety boundary.
-- Release the merged catalog and selected profiles as one verified generation.
+- `resolveActiveStableCheckout() -> { activePath, stablePath, commit }`
+- `installVerifiedCommit({ checkout, commit, target }) -> InstallResult`
+- `buildReleaseArtifacts() -> Array<{ path, sha256 }>`
 
-- [ ] Document enabled-provider sync, LKG age and state, deterministic SOTA, `qwen3.8-max`, Desktop restart behavior, Model Picker continuity, and external subagent routes.
-- [ ] Run `git diff --check` and the targeted Node and Swift commands from Tasks 1 through 5. Use fixtures for paid providers and only free or low-cost live checks.
-- [ ] Verify that ChatGPT login, MCP servers, skills, provider credentials, and unrelated settings match the pre-change snapshots. Verify that a failed sync leaves the previous merged catalog available.
-- [ ] Build the release artifacts and inspect the final catalog, Desktop switcher, Model Picker, and Sol/Luna profile IDs. A separate repository is not part of this release.
-- [ ] For this planning change, stage only the two requested documents and create the required commit:
+- [ ] Add tests that reject an active/stable checkout mismatch, reject installation from a dirty or unverified commit, and accept installation only when both paths resolve to the same verified commit.
+- [ ] Run `node --test test/update-target.test.mjs test/tray-install.test.mjs`; confirm the new cases fail.
+- [ ] Implement active/stable checkout alignment and install from one verified commit. Record the commit SHA and artifact checksums before any release push.
+- [ ] Update documentation for LKG age/state, launchd backoff, lock behavior, `model_catalog_json`, full restart choice, Model Picker continuity, native Sol/Luna ownership, and selected external profiles.
+- [ ] Create `codex-router-dynamic-model-catalog` in the authenticated user's GitHub account. Add upstream attribution in `NOTICE.md`, MIT in `LICENSE`, CI with `npm test` and `swift test`, and a redacted `gitleaks` scan.
+- [ ] Build release artifacts with `./scripts/build-macos-model-picker.sh`, `./scripts/build-macos-tray-app.sh`, and `./scripts/build-desktop-tray.sh`. Upload them from the release workflow with SHA-256 checksums.
+- [ ] Run `git diff --check`, all targeted tests, the secret scan, and artifact checksum verification. Inspect the generated catalog, native Sol/Luna IDs, Model Picker sections, and restart notice.
+- [ ] Push only the verified commit and tag after checks pass:
 
 ```sh
-git add -- docs/superpowers/specs/2026-08-03-dynamic-model-catalog-design.md \
-  docs/superpowers/plans/2026-08-03-dynamic-model-catalog-plan.md
-git commit -m "docs: plan dynamic model catalog"
+GH_USER="$(gh api user --jq .login)"
+gh repo create "$GH_USER/codex-router-dynamic-model-catalog" --private --source . --remote origin --push=false
+git push origin HEAD:main
+git push origin "$(git describe --tags --exact-match HEAD)"
 ```
+
+- [ ] Commit independently: `git add src README.md docs test .github LICENSE NOTICE.md && git commit -m "release: publish dynamic model catalog"`.

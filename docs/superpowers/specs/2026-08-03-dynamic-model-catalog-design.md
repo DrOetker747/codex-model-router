@@ -2,30 +2,33 @@
 
 ## Goal
 
-Make the local model catalog follow the live catalogs of all enabled providers while keeping the existing Model Picker and native Codex behavior safe.
+Make the local catalog follow the live catalogs of all enabled providers while preserving the existing Model Picker, native Codex models, and Codex state.
 
 ## Approved solution
 
-- Keep the Model Picker. It remains the compact SOTA view.
-- After a graceful Codex Desktop restart, the native switcher reads the merged catalog and shows native OpenAI models together with current external models.
-- Synchronize every enabled provider. Normalize model IDs to canonical slugs. Include `qwen3.8-max` when the live catalog returns it.
-- Calculate SOTA deterministically from the live catalog. Do not invent models or use stale data as a fresh result.
-- Store a last-known-good cache per provider with the model payload, fetch time, age, and state: `fresh`, `stale`, `unavailable`, or `invalid`.
-- Rebuild the merged catalog after sync. Rebuild only compatible subagent profiles that are selected by the capability rules.
-- Keep Sol and Luna as root profiles. Add external models as compatible subagent routes without replacing the roots.
-- Preserve ChatGPT login, MCP servers, skills, provider settings, and unrelated Codex configuration.
-- Use fixtures and cheap or free live checks. Do not run paid live tests without explicit approval.
-- Keep this implementation in the current repository. A separate repository is a later release decision.
+- Keep the existing Model Picker and all its current sections and lists. Feed it a fresh merged snapshot. SOTA is one section, not the whole picker.
+- Generate `model_catalog_json` in the user Codex `config.toml`. After a full Codex Desktop restart, the native switcher reads that generated catalog and shows native OpenAI plus current external models. No Codex Desktop source is assumed or changed.
+- Synchronize every enabled provider with a regular `launchd` job. Use bounded exponential backoff, single-flight locking, and atomic LKG writes.
+- Keep `qwen3.8-max` when the live catalog returns that canonical ID.
+- Calculate SOTA only from live valid metadata or explicitly labelled LKG data. Use real `created` metadata when present. When it is absent, use deterministic version and family parsing under an explicit policy. Never invent recency.
+- Store a per-provider LKG payload, fetch time, age, and state: `fresh`, `stale`, `unavailable`, or `invalid`.
+- Rebuild the merged catalog after sync. Preserve native Sol and Luna models owned by OpenAI/Codex. Generate only selected compatible external subagent profiles.
+- Preserve ChatGPT login, MCP servers, skills, credentials, provider settings, and unrelated Codex configuration. Never restart Codex without an explicit user choice.
+- Use fixtures and cheap or free live checks. Paid live tests require explicit approval.
 
 ## Runtime flow
 
-1. Read the enabled provider set.
-2. Fetch and validate each live catalog.
-3. Write a successful response to its LKG cache, or expose the cache state and age when the fetch fails.
-4. Merge valid provider entries, rank SOTA, and rebuild selected compatible agent profiles.
-5. Expose the merged catalog to the Desktop switcher and the existing Model Picker.
-6. Apply a selected model only to the next task. Restart Codex gracefully when requested.
+1. The `launchd` job acquires the single-flight lock and reads enabled providers.
+2. It fetches and validates each live catalog, applying backoff on failure.
+3. It writes a successful LKG record atomically, or exposes the previous record with its age and state.
+4. It merges providers, ranks SOTA, preserves native profiles, and rebuilds selected external subagent profiles.
+5. It writes `model_catalog_json` atomically to `config.toml` and refreshes the Model Picker snapshot.
+6. The UI shows when the catalog is newer and that a restart is required. The user chooses whether to restart Codex.
+
+## Release boundary
+
+Finalization includes one verified active/stable checkout, installation from one verified commit, and publication to a new user-owned GitHub repository with upstream attribution, MIT licensing, secret scanning, CI, release artifacts, and a push only after verification.
 
 ## Safety boundary
 
-Catalog failure must not delete the previous working configuration. A failed sync, merge, profile rebuild, model selection, or restart keeps the previous model and provider state. Credentials remain in the existing protected storage and never enter UI state or command arguments.
+A failed fetch, merge, profile rebuild, config write, selection, or restart keeps the previous working state. Credentials stay in protected storage and never enter UI state or command arguments.
