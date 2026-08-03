@@ -13,6 +13,7 @@ import {
 } from "./catalog-lkg.mjs";
 import { credentialStatus } from "./provider-credentials.mjs";
 import { withCatalogSingleFlight } from "./service-operation-lock.mjs";
+import { selectSotaModelIds } from "./sota-ranking.mjs";
 import { STATE_DIR } from "./paths.mjs";
 import { readProviderSelection } from "./provider-selection.mjs";
 import { readUserModels, userModelEntry, writeUserModels } from "./user-models.mjs";
@@ -54,64 +55,12 @@ function sameModels(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function numericVersion(value) {
-  return String(value)
-    .split(".")
-    .map((part) => Number.parseInt(part, 10));
-}
-
-function compareVersions(left, right) {
-  const length = Math.max(left.length, right.length);
-  for (let index = 0; index < length; index += 1) {
-    const difference = (left[index] || 0) - (right[index] || 0);
-    if (difference) return difference;
-  }
-  return 0;
-}
-
-function openCodeGoSotaCandidate(id) {
-  const rules = [
-    [/^kimi-k(\d+(?:\.\d+)*)(?:-.*)?$/, () => "kimi"],
-    [/^minimax-m(\d+(?:\.\d+)*)$/, () => "minimax"],
-    [/^grok-(\d+(?:\.\d+)*)$/, () => "grok"],
-    [/^glm-(\d+(?:\.\d+)*)$/, () => "glm"],
-    [/^gpt-(\d+(?:\.\d+)*)-(luna)$/, (match) => `gpt:${match[2]}`],
-    [
-      /^deepseek-v(\d+(?:\.\d+)*)-(flash|pro)$/,
-      (match) => `deepseek:${match[2]}`,
-    ],
-    [/^qwen(\d+(?:\.\d+)*)-(max|plus)$/, (match) => `qwen:${match[2]}`],
-    [/^mimo-v(\d+(?:\.\d+)*)(?:-(pro))?$/, (match) => `mimo:${match[2] || "standard"}`],
-    [/^hy(\d+(?:\.\d+)*)$/, () => "hy"],
-  ];
-  for (const [pattern, key] of rules) {
-    const match = String(id).match(pattern);
-    if (match) return { id, key: key(match), version: numericVersion(match[1]) };
-  }
-  return undefined;
-}
-
 export function pickerModelIds(providerId, discovered) {
   const provider = PROVIDERS.get(providerId);
   if (provider?.pickerPolicy === "hide-all") return new Set();
-  if (providerId !== "opencode-go") return new Set(discovered);
-  const best = new Map();
-  for (const id of [...new Set(discovered)].sort()) {
-    const candidate = openCodeGoSotaCandidate(id);
-    if (!candidate) continue;
-    const current = best.get(candidate.key);
-    const comparison = current
-      ? compareVersions(candidate.version, current.version)
-      : 1;
-    if (
-      !current ||
-      comparison > 0 ||
-      (comparison === 0 && candidate.id.length < current.id.length)
-    ) {
-      best.set(candidate.key, candidate);
-    }
-  }
-  return new Set([...best.values()].map((candidate) => candidate.id));
+  return provider?.modelDiscovery?.endpoint
+    ? selectSotaModelIds(discovered)
+    : new Set(discovered);
 }
 
 export function filteredDiscoveredModelIds(provider, discovered) {
@@ -158,8 +107,17 @@ export function mergeDiscoveredModels(providerId, discovered, metadata = {}) {
   const ids = filtered
     .filter((id) => !registered.has(id) && !manualIds.has(id))
     .sort();
+  const discoveredIds = new Set(ids);
   const pickerIds = pickerModelIds(providerId, filtered);
   const provenance = catalogMetadata(metadata);
+  const retained = existing
+    .filter(
+      (model) =>
+        model.provider === providerId &&
+        model.autoDiscovered === providerId &&
+        !discoveredIds.has(model.upstreamModel),
+    )
+    .map((model) => ({ ...model, pickerVisibility: "hide" }));
   const synced = ids.map((id, index) => {
     const current = existingById.get(id);
     const pickerVisibility = pickerIds.has(id) ? "list" : "hide";
@@ -176,7 +134,7 @@ export function mergeDiscoveredModels(providerId, discovered, metadata = {}) {
       ...provenance,
     });
   });
-  const next = [...others, ...synced];
+  const next = [...others, ...retained, ...synced];
   if (sameModels(existing, next)) {
     return { changed: false, path: undefined, models: synced.length };
   }

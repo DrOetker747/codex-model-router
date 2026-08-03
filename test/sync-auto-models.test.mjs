@@ -9,12 +9,43 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const functionStateDir = mkdtempSync(path.join(os.tmpdir(), "enabled-provider-sync-"));
 process.env.MODEL_ROUTER_STATE_DIR = functionStateDir;
-const { syncEnabledProviderCatalogs } = await import("../src/sync-auto-models.mjs");
+const { pickerModelIds, syncEnabledProviderCatalogs } = await import("../src/sync-auto-models.mjs");
 const { PROVIDERS } = await import("../src/model-registry.mjs");
 const { providerLkgPath, writeProviderLkg } = await import("../src/catalog-lkg.mjs");
 const { readUserModels, userModelEntry, writeUserModels } = await import("../src/user-models.mjs");
 
 test.after(() => rmSync(functionStateDir, { recursive: true, force: true }));
+
+test("ranks dynamic providers, preserves static picker behavior, and honors hide-all", () => {
+  const dynamic = {
+    id: "fixture-picker-dynamic",
+    modelDiscovery: { endpoint: "/models" },
+  };
+  const staticProvider = { id: "fixture-picker-static" };
+  const hidden = {
+    id: "fixture-picker-hidden",
+    modelDiscovery: { endpoint: "/models" },
+    pickerPolicy: "hide-all",
+  };
+  for (const provider of [dynamic, staticProvider, hidden]) {
+    PROVIDERS.set(provider.id, Object.freeze(provider));
+  }
+  try {
+    assert.deepEqual(
+      [...pickerModelIds(dynamic.id, ["grok-4.9", "grok-4.10"])],
+      ["grok-4.10"],
+    );
+    assert.deepEqual(
+      [...pickerModelIds(staticProvider.id, ["grok-4.9", "grok-4.10"])],
+      ["grok-4.9", "grok-4.10"],
+    );
+    assert.deepEqual([...pickerModelIds(hidden.id, ["grok-4.10"])], []);
+  } finally {
+    for (const provider of [dynamic, staticProvider, hidden]) {
+      PROVIDERS.delete(provider.id);
+    }
+  }
+});
 
 test("syncs two enabled providers, skips the disabled provider, and keeps qwen3.8-max", async () => {
   const calls = [];
@@ -103,6 +134,106 @@ test("uses declared discovery capability for a new enabled provider and preserve
     assert.deepEqual(readUserModels().find((model) => model.provider === "deepseek"), staticEntry);
   } finally {
     PROVIDERS.delete(dynamicProvider.id);
+  }
+});
+
+test("selects latest SOTA models for every enabled provider and hides older models", async () => {
+  const dynamicProvider = {
+    id: "fixture-ranking-provider",
+    displayName: "Fixture Ranking Provider",
+    kind: "openai-compatible",
+    ownedBy: "fixture",
+    baseUrl: "https://fixture.invalid/v1",
+    modelDiscovery: { endpoint: "/models" },
+    credential: { environment: [], file: "fixture.secret" },
+  };
+  PROVIDERS.set(dynamicProvider.id, Object.freeze(dynamicProvider));
+  writeUserModels([]);
+  try {
+    await syncEnabledProviderCatalogs({
+      enabledProviders: [dynamicProvider.id],
+      fetchCatalog: async () => ({
+        data: [{ id: "grok-4.9" }, { id: "grok-4.10" }],
+      }),
+      now: () => Date.parse("2026-08-03T10:00:00.000Z"),
+      sleep: async () => {},
+    });
+
+    const models = readUserModels();
+    assert.equal(
+      models.find((model) => model.upstreamModel === "grok-4.9")?.pickerVisibility,
+      "hide",
+    );
+    assert.equal(
+      models.find((model) => model.upstreamModel === "grok-4.10")?.pickerVisibility,
+      "list",
+    );
+    assert.deepEqual(
+      models.map((model) => model.upstreamModel).sort(),
+      ["grok-4.10", "grok-4.9"],
+    );
+  } finally {
+    PROVIDERS.delete(dynamicProvider.id);
+    writeUserModels([]);
+  }
+});
+
+test("retains missing and unknown routes but hides them from SOTA", async () => {
+  const dynamicProvider = {
+    id: "fixture-retention-provider",
+    displayName: "Fixture Retention Provider",
+    kind: "openai-compatible",
+    ownedBy: "fixture",
+    baseUrl: "https://fixture.invalid/v1",
+    modelDiscovery: { endpoint: "/models" },
+    credential: { environment: [], file: "fixture.secret" },
+  };
+  PROVIDERS.set(dynamicProvider.id, Object.freeze(dynamicProvider));
+  writeUserModels([
+    userModelEntry({
+      providerId: dynamicProvider.id,
+      upstreamId: "grok-4.9",
+      priority: 100,
+      autoDiscovered: dynamicProvider.id,
+      pickerVisibility: "list",
+    }),
+    userModelEntry({
+      providerId: dynamicProvider.id,
+      upstreamId: "unknown-legacy-model",
+      priority: 101,
+      autoDiscovered: dynamicProvider.id,
+      pickerVisibility: "list",
+    }),
+  ]);
+  try {
+    await syncEnabledProviderCatalogs({
+      enabledProviders: [dynamicProvider.id],
+      fetchCatalog: async () => ({
+        data: [{ id: "grok-4.10" }, { id: "unknown-live-model" }],
+      }),
+      now: () => Date.parse("2026-08-03T10:00:00.000Z"),
+      sleep: async () => {},
+    });
+
+    const byId = new Map(
+      readUserModels()
+        .filter((model) => model.provider === dynamicProvider.id)
+        .map((model) => [model.upstreamModel, model]),
+    );
+    assert.deepEqual([...byId.keys()].sort(), [
+      "grok-4.10",
+      "grok-4.9",
+      "unknown-legacy-model",
+      "unknown-live-model",
+    ]);
+    assert.equal(byId.get("grok-4.10")?.pickerVisibility, "list");
+    assert.equal(byId.get("grok-4.9")?.pickerVisibility, "hide");
+    assert.equal(byId.get("unknown-legacy-model")?.pickerVisibility, "hide");
+    assert.equal(byId.get("unknown-live-model")?.pickerVisibility, "hide");
+    assert.ok([...byId.values()].every((model) => model.listed));
+  } finally {
+    PROVIDERS.delete(dynamicProvider.id);
+    writeUserModels([]);
   }
 });
 
