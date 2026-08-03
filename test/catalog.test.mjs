@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { buildMergedCatalog, buildLoginFreeCatalog, routedModel } from "../src/catalog.mjs";
+import {
+  buildMergedCatalog,
+  buildLoginFreeCatalog,
+  routedModel,
+  writeModelCatalogJson,
+} from "../src/catalog.mjs";
 
 const template = {
   slug: "gpt-5.5",
@@ -32,6 +40,24 @@ const grok = {
   inputModalities: ["text", "image"],
   compHash: "grok-oauth-grok-4-5-v1",
 };
+
+test("model catalog writer stores its generation timestamp with models", () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "codex-router-catalog-writer-"));
+  const target = path.join(stateDir, "merged-models.json");
+  try {
+    writeModelCatalogJson(
+      [{ slug: "gpt-5.6-sol", visibility: "list" }],
+      "2026-08-03T12:00:00.000Z",
+      target,
+    );
+    assert.deepEqual(JSON.parse(readFileSync(target, "utf8")), {
+      catalogUpdatedAt: "2026-08-03T12:00:00.000Z",
+      models: [{ slug: "gpt-5.6-sol", visibility: "list" }],
+    });
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
 
 test("routed models rewrite GPT identity text to the external model name", () => {
   const model = routedModel(template, grok);

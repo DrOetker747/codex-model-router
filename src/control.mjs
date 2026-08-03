@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
+  appendFileSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -15,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { protectPrivateFile } from "./file-security.mjs";
 import {
   CONFIG_PATH,
+  CODEX_AGENTS_DIR,
   MERGED_CATALOG_PATH,
   NATIVE_ALIAS_PATH,
   NATIVE_CATALOG_PATH,
@@ -78,9 +82,43 @@ function restoreFile(filePath, snapshot) {
     protectPrivateFile(temporary);
     renameSync(temporary, filePath);
     protectPrivateFile(filePath);
+    chmodSync(filePath, snapshot.mode);
   } catch (error) {
     if (existsSync(temporary)) unlinkSync(temporary);
     throw error;
+  }
+}
+
+const managedAgentName = /^router-model-[a-z0-9-]+\.toml$/;
+const managedAgentMarker = "# Managed by Codex Router.";
+
+function isManagedAgent(snapshot) {
+  return snapshot.exists && snapshot.contents.toString("utf8").startsWith(managedAgentMarker);
+}
+
+function snapshotManagedAgents() {
+  const snapshots = new Map();
+  if (!existsSync(CODEX_AGENTS_DIR)) return snapshots;
+  for (const entry of readdirSync(CODEX_AGENTS_DIR, { withFileTypes: true })) {
+    if (!entry.isFile() || !managedAgentName.test(entry.name)) continue;
+    const target = path.join(CODEX_AGENTS_DIR, entry.name);
+    const snapshot = snapshotFile(target);
+    if (isManagedAgent(snapshot)) snapshots.set(entry.name, snapshot);
+  }
+  return snapshots;
+}
+
+function restoreManagedAgents(original) {
+  if (existsSync(CODEX_AGENTS_DIR)) {
+    for (const entry of readdirSync(CODEX_AGENTS_DIR, { withFileTypes: true })) {
+      if (!entry.isFile() || !managedAgentName.test(entry.name)) continue;
+      const target = path.join(CODEX_AGENTS_DIR, entry.name);
+      const current = snapshotFile(target);
+      if (isManagedAgent(current) && !original.has(entry.name)) unlinkSync(target);
+    }
+  }
+  for (const [name, snapshot] of original) {
+    restoreFile(path.join(CODEX_AGENTS_DIR, name), snapshot);
   }
 }
 
@@ -484,41 +522,13 @@ async function setLoginFreeMode(desired) {
   process.stdout.write(result.stdout);
 }
 
-function restartOverride() {
-  const command = process.env.CODEX_ROUTER_RESTART_COMMAND;
-  const rawArgs = process.env.CODEX_ROUTER_RESTART_ARGS;
-  const testOverride = process.env.NODE_ENV === "test" || process.env.CODEX_ROUTER_RESTART_LOG;
-  if (!testOverride || (!command && !rawArgs)) return undefined;
-  if (!command || !rawArgs) {
-    throw new Error("Both CODEX_ROUTER_RESTART_COMMAND and CODEX_ROUTER_RESTART_ARGS are required.");
-  }
-  let parsedArgs;
-  try {
-    parsedArgs = JSON.parse(rawArgs);
-  } catch (error) {
-    throw new Error(
-      `CODEX_ROUTER_RESTART_ARGS must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  if (!Array.isArray(parsedArgs) || parsedArgs.some((value) => typeof value !== "string")) {
-    throw new Error("CODEX_ROUTER_RESTART_ARGS must be a JSON array of strings.");
-  }
-  return { command, args: parsedArgs };
-}
-
 function restartCodexApp() {
-  const override = restartOverride();
-  if (override) {
-    const result = spawnSync(override.command, override.args, {
-      cwd: REPO_ROOT,
-      env: process.env,
-      encoding: "utf8",
-    });
-    if (result.error || result.status !== 0) {
-      throw new Error(
-        (result.stderr || result.error?.message || "Codex graceful restart failed.").trim(),
-      );
+  if (process.env.NODE_ENV === "test") {
+    const marker = process.env.CODEX_ROUTER_TEST_RESTART_MARKER;
+    if (!marker || !path.isAbsolute(marker)) {
+      throw new Error("The test restart marker is missing.");
     }
+    appendFileSync(marker, "called\n", { encoding: "utf8", mode: 0o600 });
     return;
   }
 
@@ -528,7 +538,7 @@ function restartCodexApp() {
   const quit = spawnSync(
     "/usr/bin/osascript",
     ["-e", 'tell application id "com.openai.codex" to quit'],
-    { encoding: "utf8" },
+    { encoding: "utf8", env: {} },
   );
   if (quit.error || quit.status !== 0) {
     throw new Error(
@@ -537,6 +547,7 @@ function restartCodexApp() {
   }
   const reopen = spawnSync("/usr/bin/open", ["-b", "com.openai.codex"], {
     encoding: "utf8",
+    env: {},
   });
   if (reopen.error || reopen.status !== 0) {
     throw new Error(
@@ -560,6 +571,11 @@ function rollbackModelState(snapshots) {
       rollbackError ||= error;
     }
   }
+  try {
+    restoreManagedAgents(snapshots.agents);
+  } catch (error) {
+    rollbackError ||= error;
+  }
   if (rollbackError) {
     throw new Error(
       `Model selection rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
@@ -575,6 +591,9 @@ function restartOption() {
     : separate === -1
       ? undefined
       : args[separate + 1];
+  if (separate !== -1 && separate === args.length - 1) {
+    throw new Error("Usage: control model-set <model-slug> [--restart=true|false]");
+  }
   if (value === undefined) return false;
   if (value !== "true" && value !== "false") {
     throw new Error("Usage: control model-set <model-slug> [--restart=true|false]");
@@ -608,6 +627,7 @@ async function setCodexModel(slug, restart = false) {
     providers: snapshotFile(PROVIDER_SELECTION_PATH),
     catalog: snapshotFile(MERGED_CATALOG_PATH),
     aliases: snapshotFile(NATIVE_ALIAS_PATH),
+    agents: snapshotManagedAgents(),
   };
   if (route) {
     const provider = PROVIDERS.get(route.provider);
@@ -693,6 +713,15 @@ async function setCodexModel(slug, restart = false) {
   );
 }
 
+async function setNextTaskModel(slug, { restart = false } = {}) {
+  return setCodexModel(slug, restart);
+}
+
+function runCodexRestart() {
+  restartCodexApp();
+  process.stdout.write(`${JSON.stringify({ restarted: true, restartRequired: false })}\n`);
+}
+
 async function updateAndVerifyCodex() {
   const { runCodexMaintenance } = await import("./codex-maintenance.mjs");
   process.stdout.write(`${JSON.stringify(runCodexMaintenance())}\n`);
@@ -732,7 +761,9 @@ if (args.includes("--probe")) {
   }
   process.stdout.write(`${JSON.stringify(modelCatalogSnapshot())}\n`);
 } else if (args[0] === "model-set") {
-  await setCodexModel(args[1], restartOption());
+  await setNextTaskModel(args[1], { restart: restartOption() });
+} else if (args[0] === "codex-restart") {
+  runCodexRestart();
 } else if (args[0] === "maintenance") {
   await updateAndVerifyCodex();
 } else {

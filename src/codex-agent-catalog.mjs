@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
@@ -55,11 +56,27 @@ export function syncRoutedCodexAgents(models, agentsDir = CODEX_AGENTS_DIR) {
   for (const model of models) {
     const definition = routedAgentDefinition(model);
     const target = path.join(agentsDir, definition.fileName);
+    if (existsSync(target)) {
+      let existing;
+      try {
+        existing = readFileSync(target, "utf8");
+      } catch {
+        throw new Error(`Refusing to replace user-owned agent ${target}.`);
+      }
+      if (!existing.startsWith("# Managed by Codex Router.")) {
+        throw new Error(`Refusing to replace user-owned agent ${target}.`);
+      }
+    }
     const temporary = `${target}.tmp.${process.pid}`;
-    writeFileSync(temporary, definition.contents, { encoding: "utf8", mode: 0o600 });
-    protectPrivateFile(temporary);
-    renameSync(temporary, target);
-    protectPrivateFile(target);
+    try {
+      writeFileSync(temporary, definition.contents, { encoding: "utf8", mode: 0o600 });
+      protectPrivateFile(temporary);
+      renameSync(temporary, target);
+      protectPrivateFile(target);
+    } catch (error) {
+      if (existsSync(temporary)) unlinkSync(temporary);
+      throw error;
+    }
     written.push({ model: model.slug, agent: definition.agentName, path: target });
   }
   return written;

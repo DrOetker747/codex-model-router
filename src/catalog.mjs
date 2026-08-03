@@ -37,6 +37,18 @@ function atomicJson(target, value) {
   protectPrivateFile(target);
 }
 
+export function writeModelCatalogJson(
+  models,
+  catalogUpdatedAt = new Date().toISOString(),
+  target = MERGED_CATALOG_PATH,
+) {
+  if (!Array.isArray(models)) throw new Error("Merged model catalog must be an array.");
+  if (typeof catalogUpdatedAt !== "string" || !catalogUpdatedAt) {
+    throw new Error("Merged model catalog requires a generation timestamp.");
+  }
+  atomicJson(target, { catalogUpdatedAt, models });
+}
+
 function captureNative() {
   const args = ["debug", "models"];
   if (bundled) args.push("--bundled");
@@ -267,7 +279,7 @@ function main() {
         }),
         aliases: {},
       };
-  atomicJson(MERGED_CATALOG_PATH, { models: merged });
+  writeModelCatalogJson(merged);
   atomicJson(NATIVE_ALIAS_PATH, { version: 1, aliases });
   const routedAgents = syncRoutedCodexAgents(routedModels);
   process.stdout.write(

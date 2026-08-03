@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -64,4 +64,19 @@ test("agent status reports definitions that have not been installed", () => {
 
 test("agent definitions reject non-routed model slugs", () => {
   assert.throws(() => routedAgentDefinition({ slug: "gpt-5.6-sol" }), /invalid model slug/);
+});
+
+test("agent sync does not replace a user-owned matching file", () => {
+  const agentsDir = mkdtempSync(path.join(os.tmpdir(), "codex-router-user-agent-"));
+  const target = path.join(agentsDir, "router-model-kimi-oauth-k3.toml");
+  writeFileSync(target, "name = \"user-owned\"\n", { mode: 0o600 });
+  try {
+    assert.throws(
+      () => syncRoutedCodexAgents([kimi], agentsDir),
+      /user-owned agent/,
+    );
+    assert.equal(readFileSync(target, "utf8"), "name = \"user-owned\"\n");
+  } finally {
+    rmSync(agentsDir, { recursive: true, force: true });
+  }
 });

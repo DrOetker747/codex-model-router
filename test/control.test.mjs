@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
-  chmodSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -464,8 +464,9 @@ test("model catalog and selection preserve native state and support an explicit 
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-native-catalog-"));
   const configPath = path.join(stateDir, "config.toml");
   const credentialsPath = path.join(stateDir, "deepseek-api-key.secret");
+  const authPath = path.join(stateDir, "auth.json");
+  const unrelatedTomlPath = path.join(stateDir, "unrelated.toml");
   const skillsPath = path.join(stateDir, "skills.toml");
-  const restartScript = path.join(stateDir, "mock-restart.mjs");
   const restartLog = path.join(stateDir, "restart.log");
   writeFileSync(
     configPath,
@@ -478,6 +479,8 @@ test("model catalog and selection preserve native state and support an explicit 
     { mode: 0o600 },
   );
   writeFileSync(credentialsPath, "test-provider-secret\n", { mode: 0o600 });
+  writeFileSync(authPath, "{\"tokens\":\"must-stay-private\"}\n", { mode: 0o600 });
+  writeFileSync(unrelatedTomlPath, "unrelated = \"keep-me\"\n", { mode: 0o600 });
   writeFileSync(skillsPath, "skill = \"keep-me\"\n", { mode: 0o600 });
   writeFileSync(
     path.join(stateDir, "caller-secret"),
@@ -506,22 +509,14 @@ test("model catalog and selection preserve native state and support an explicit 
     })}\n`,
     { mode: 0o600 },
   );
-  writeFileSync(
-    restartScript,
-    `import { appendFileSync } from "node:fs"; appendFileSync(process.env.CODEX_ROUTER_RESTART_LOG, "called\\n");\n`,
-    { mode: 0o600 },
-  );
-  chmodSync(restartScript, 0o700);
-
   const environment = {
     ...process.env,
+    NODE_ENV: "test",
     CODEX_HOME: stateDir,
     CODEX_BIN: "/usr/bin/true",
     CODEX_ROUTER_STATE_DIR: stateDir,
     MODEL_ROUTER_TARGET: "codex",
-    CODEX_ROUTER_RESTART_COMMAND: process.execPath,
-    CODEX_ROUTER_RESTART_ARGS: JSON.stringify([restartScript]),
-    CODEX_ROUTER_RESTART_LOG: restartLog,
+    CODEX_ROUTER_TEST_RESTART_MARKER: restartLog,
   };
   const runControl = (...commandArgs) =>
     JSON.parse(
@@ -538,8 +533,15 @@ test("model catalog and selection preserve native state and support an explicit 
       [path.join(root, "src", "config-manager.mjs"), "enable"],
       { cwd: root, encoding: "utf8", env: environment },
     );
+    const beforeConfig = readFileSync(configPath, "utf8");
+    const beforeMcp = beforeConfig.slice(beforeConfig.indexOf("[mcp_servers.local]"));
+    const beforeCredential = readFileSync(credentialsPath);
     const beforeSkill = readFileSync(skillsPath);
     const beforeCredentialMode = statSync(credentialsPath).mode;
+    const beforeAuth = readFileSync(authPath);
+    const beforeAuthMode = statSync(authPath).mode;
+    const beforeUnrelatedToml = readFileSync(unrelatedTomlPath);
+    const beforeUnrelatedTomlMode = statSync(unrelatedTomlPath).mode;
     const catalog = runControl("model-catalog", "--json");
     assert.equal(catalog.catalogUpdatedAt, "2026-08-03T12:00:00.000Z");
     assert.equal(catalog.restartRequired, true);
@@ -552,9 +554,17 @@ test("model catalog and selection preserve native state and support an explicit 
     assert.equal(saved.selectedModel, "deepseek/deepseek-v4-pro");
     assert.equal(saved.restartRequired, true);
     assert.equal(saved.restarted, false);
-    assert.match(readFileSync(configPath, "utf8"), /\[mcp_servers\.local\]/);
+    assert.equal(
+      readFileSync(configPath, "utf8").slice(readFileSync(configPath, "utf8").indexOf("[mcp_servers.local]")),
+      beforeMcp,
+    );
+    assert.deepEqual(readFileSync(credentialsPath), beforeCredential);
     assert.deepEqual(readFileSync(skillsPath), beforeSkill);
     assert.equal(statSync(credentialsPath).mode, beforeCredentialMode);
+    assert.deepEqual(readFileSync(authPath), beforeAuth);
+    assert.equal(statSync(authPath).mode, beforeAuthMode);
+    assert.deepEqual(readFileSync(unrelatedTomlPath), beforeUnrelatedToml);
+    assert.equal(statSync(unrelatedTomlPath).mode, beforeUnrelatedTomlMode);
     assert.equal(
       JSON.parse(readFileSync(path.join(stateDir, "enabled-providers.json"), "utf8"))
         .providers.includes("deepseek"),
@@ -570,6 +580,16 @@ test("model catalog and selection preserve native state and support an explicit 
     assert.equal(restarted.restarted, true);
     assert.equal(restarted.restartRequired, false);
     assert.equal(readFileSync(restartLog, "utf8"), "called\n");
+
+    const directRestart = runControl("codex-restart");
+    assert.deepEqual(directRestart, { restarted: true, restartRequired: false });
+    assert.equal(readFileSync(restartLog, "utf8"), "called\ncalled\n");
+
+    assert.throws(
+      () => runControl("model-set", "gpt-5.6-sol", "--restart"),
+      /Usage: control model-set/,
+      "bare --restart must be rejected",
+    );
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
   }
@@ -579,6 +599,7 @@ test("failed catalog rebuild restores disabled-provider selection and model conf
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-catalog-rollback-"));
   const configPath = path.join(stateDir, "config.toml");
   const providersPath = path.join(stateDir, "enabled-providers.json");
+  const agentsDir = path.join(stateDir, "agents");
   writeFileSync(configPath, `model = "gpt-5.6-sol"\n`, { mode: 0o600 });
   writeFileSync(
     providersPath,
@@ -591,9 +612,16 @@ test("failed catalog rebuild restores disabled-provider selection and model conf
   writeFileSync(path.join(stateDir, "caller-secret"), "test-control-caller-capability-with-sufficient-length\n", {
     mode: 0o600,
   });
-  writeFileSync(path.join(stateDir, "native-models.json"), JSON.stringify({ models: [] }), {
+  writeFileSync(path.join(stateDir, "native-models.json"), JSON.stringify({
+    models: [{ slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" }],
+  }), {
     mode: 0o600,
   });
+  mkdirSync(agentsDir, { mode: 0o700 });
+  const existingManagedAgent = path.join(agentsDir, "router-model-deepseek-deepseek-v4-flash.toml");
+  writeFileSync(existingManagedAgent, "# Managed by Codex Router. old definition\n", { mode: 0o600 });
+  const userOwnedAgent = path.join(agentsDir, "router-model-deepseek-deepseek-v4-pro.toml");
+  mkdirSync(userOwnedAgent, { mode: 0o700 });
   const environment = {
     ...process.env,
     CODEX_HOME: stateDir,
@@ -611,10 +639,14 @@ test("failed catalog rebuild restores disabled-provider selection and model conf
           [path.join(root, "src", "control.mjs"), "model-set", "deepseek/deepseek-v4-pro"],
           { cwd: root, encoding: "utf8", env: environment, stdio: ["ignore", "pipe", "pipe"] },
         ),
-      /catalog|Native model catalog/i,
+      /catalog|Native model catalog|EISDIR|directory|user-owned/i,
     );
     assert.deepEqual(readFileSync(configPath), originalConfig);
     assert.deepEqual(readFileSync(providersPath), originalProviders);
+    assert.equal(readFileSync(existingManagedAgent, "utf8"), "# Managed by Codex Router. old definition\n");
+    assert.equal(statSync(existingManagedAgent).mode & 0o777, 0o600);
+    assert.equal(statSync(userOwnedAgent).isDirectory(), true);
+    assert.equal(readdirSync(agentsDir).some((name) => name.includes(".tmp.")), false);
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
   }
