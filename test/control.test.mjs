@@ -75,6 +75,13 @@ function probe(target, providers, usageEvents = [], options = {}) {
       { mode: 0o600 },
     );
   }
+  if (options.mergedCatalog) {
+    writeFileSync(
+      path.join(stateDir, "merged-models.json"),
+      `${JSON.stringify(options.mergedCatalog)}\n`,
+      { mode: 0o600 },
+    );
+  }
   if (options.loginFree) {
     writeFileSync(
       path.join(stateDir, "config.toml"),
@@ -138,6 +145,19 @@ test("codex probe exposes only privacy-safe recent usage events", () => {
   }]);
   assert.equal("prompt" in slice.usageEvents[0], false);
   assert.equal("response" in slice.usageEvents[0], false);
+});
+
+test("picker probe exposes catalog freshness and restart state", () => {
+  const slice = probe("codex", [], [], {
+    picker: true,
+    selectedModel: "gpt-5.6-sol",
+    mergedCatalog: {
+      catalogUpdatedAt: "2026-08-03T12:34:56.000Z",
+      models: [],
+    },
+  });
+  assert.equal(slice.catalogUpdatedAt, "2026-08-03T12:34:56.000Z");
+  assert.equal(slice.restartRequired, true);
 });
 
 test("picker probe omits slow status and usage data while preserving its catalog", () => {
@@ -632,11 +652,68 @@ test("model catalog and selection preserve native state and support an explicit 
   }
 });
 
-test("failed catalog rebuild restores disabled-provider selection and model config", () => {
+test("external model selection and explicit profile toggles manage subagent state", () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-agent-profile-"));
+  const agentsDir = path.join(stateDir, "agents");
+  const selectionPath = path.join(stateDir, "selected-external-agents.json");
+  writeFileSync(path.join(stateDir, "config.toml"), `model = "gpt-5.6-sol"\n`, { mode: 0o600 });
+  writeFileSync(
+    path.join(stateDir, "enabled-providers.json"),
+    `${JSON.stringify({ version: 1, providers: ["deepseek"] })}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(path.join(stateDir, "deepseek-api-key.secret"), "test-provider-secret\n", { mode: 0o600 });
+  writeFileSync(path.join(stateDir, "caller-secret"), "test-control-caller-capability-with-sufficient-length\n", { mode: 0o600 });
+  writeFileSync(path.join(stateDir, "native-models.json"), JSON.stringify({
+    models: [{ slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" }],
+  }), { mode: 0o600 });
+  const environment = {
+    ...process.env,
+    CODEX_HOME: stateDir,
+    CODEX_BIN: "/usr/bin/true",
+    MODEL_ROUTER_TARGET: "codex",
+    MODEL_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_EXTERNAL_AGENT_SELECTION_PATH: selectionPath,
+    MODEL_ROUTER_VERIFIED_EXTERNAL_AGENT_RECORD_PATH: path.join(stateDir, "verified-external-agents.json"),
+  };
+  const runControl = (...commandArgs) => JSON.parse(execFileSync(
+    process.execPath,
+    [path.join(root, "src", "control.mjs"), ...commandArgs],
+    { cwd: root, encoding: "utf8", env: environment },
+  ));
+
+  try {
+    execFileSync(process.execPath, [path.join(root, "src", "config-manager.mjs"), "enable"], {
+      cwd: root,
+      encoding: "utf8",
+      env: environment,
+    });
+    const selected = runControl("model-set", "deepseek/deepseek-v4-pro", "--restart=false");
+    assert.equal(selected.subagentProfile.selected, true);
+    assert.deepEqual(JSON.parse(readFileSync(selectionPath, "utf8")).profiles, ["deepseek/deepseek-v4-pro"]);
+    assert.equal(
+      readFileSync(path.join(agentsDir, "router-model-deepseek-deepseek-v4-pro.toml"), "utf8")
+        .includes('model = "deepseek/deepseek-v4-pro"'),
+      true,
+    );
+
+    const disabled = runControl("agent-profile-set", "deepseek/deepseek-v4-pro", "off");
+    assert.equal(disabled.selected, false);
+    assert.deepEqual(JSON.parse(readFileSync(selectionPath, "utf8")).profiles, []);
+    const enabled = runControl("agent-profile-set", "deepseek/deepseek-v4-pro", "on");
+    assert.equal(enabled.selected, true);
+    assert.deepEqual(enabled.selectedProfiles, ["deepseek/deepseek-v4-pro"]);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("failed external profile update restores disabled-provider selection and model config", () => {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-catalog-rollback-"));
   const configPath = path.join(stateDir, "config.toml");
   const providersPath = path.join(stateDir, "enabled-providers.json");
   const agentsDir = path.join(stateDir, "agents");
+  const externalSelectionPath = path.join(stateDir, "selected-external-agents.json");
   writeFileSync(
     configPath,
     `model = "gpt-5.6-sol"\nmodel_provider = "openai"\nroot_keep = "keep-me"\n\n[mcp_servers.local]\ncommand = "keep-me"\n`,
@@ -658,6 +735,7 @@ test("failed catalog rebuild restores disabled-provider selection and model conf
   }), {
     mode: 0o600,
   });
+  writeFileSync(externalSelectionPath, "not-json\n", { mode: 0o600 });
   mkdirSync(agentsDir, { mode: 0o700 });
   const existingManagedAgent = path.join(agentsDir, "router-model-deepseek-deepseek-v4-flash.toml");
   writeFileSync(existingManagedAgent, "# Managed by Codex Router. old definition\n", { mode: 0o600 });
@@ -669,6 +747,7 @@ test("failed catalog rebuild restores disabled-provider selection and model conf
     CODEX_BIN: "/usr/bin/true",
     CODEX_ROUTER_STATE_DIR: stateDir,
     MODEL_ROUTER_TARGET: "codex",
+    MODEL_ROUTER_EXTERNAL_AGENT_SELECTION_PATH: externalSelectionPath,
   };
   const originalConfig = readFileSync(configPath);
   const originalProviders = readFileSync(providersPath);
@@ -680,7 +759,7 @@ test("failed catalog rebuild restores disabled-provider selection and model conf
           [path.join(root, "src", "control.mjs"), "model-set", "deepseek/deepseek-v4-pro"],
           { cwd: root, encoding: "utf8", env: environment, stdio: ["ignore", "pipe", "pipe"] },
         ),
-      /catalog|Native model catalog|EISDIR|directory|user-owned/i,
+      /Invalid external agent selection/i,
     );
     assert.deepEqual(readFileSync(configPath), originalConfig);
     assertOnlyRootModelChanged(

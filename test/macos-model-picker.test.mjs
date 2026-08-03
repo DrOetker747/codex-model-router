@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -7,6 +7,12 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+test("Model Picker delegates the complete safe restart to router control", () => {
+  const source = readFileSync(path.join(repoRoot, "apps/macos/ModelPicker/main.m"), "utf8");
+  assert.match(source, /@\[\s*@"model-set",\s*slug,\s*restart \? @"--restart=true" : @"--restart=false"\s*\]/);
+  assert.doesNotMatch(source, /- \(void\)restartCodex:/);
+});
 
 test("Model Picker drains a catalog larger than the macOS pipe buffer", {
   skip: process.platform !== "darwin",

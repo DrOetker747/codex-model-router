@@ -478,8 +478,7 @@ static NSBox *SymbolTile(NSString *symbol, NSColor *color, CGFloat size) {
   [self setBusy:YES message:@"Saving selected model…"];
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     NSError *error;
-    [self runControl:@[@"model-set", slug] error:&error];
-    if (!error && restart) [self restartCodex:&error];
+    [self runControl:@[@"model-set", slug, restart ? @"--restart=true" : @"--restart=false"] error:&error];
     dispatch_async(dispatch_get_main_queue(), ^{
       if (error) {
         [self setBusy:NO message:error.localizedDescription];
@@ -489,39 +488,6 @@ static NSBox *SymbolTile(NSString *symbol, NSColor *color, CGFloat size) {
       }
     });
   });
-}
-
-- (void)restartCodex:(NSError **)error {
-  NSString *bundleID = @"com.openai.codex";
-  NSArray<NSRunningApplication *> *running = [NSRunningApplication runningApplicationsWithBundleIdentifier:bundleID];
-  NSURL *url = running.firstObject.bundleURL ?: [[NSWorkspace sharedWorkspace] URLForApplicationWithBundleIdentifier:bundleID];
-  if (!url) {
-    if (error) *error = [NSError errorWithDomain:@"ModelPicker" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Codex desktop app was not found."}];
-    return;
-  }
-  for (NSRunningApplication *app in running) {
-    if (!app.terminated && ![app terminate]) {
-      if (error) *error = [NSError errorWithDomain:@"ModelPicker" code:2 userInfo:@{NSLocalizedDescriptionKey:@"Codex did not accept a graceful quit request."}];
-      return;
-    }
-  }
-  for (NSInteger attempt = 0; attempt < 50 && [NSRunningApplication runningApplicationsWithBundleIdentifier:bundleID].count != 0; attempt++) {
-    [NSThread sleepForTimeInterval:0.1];
-  }
-  if ([NSRunningApplication runningApplicationsWithBundleIdentifier:bundleID].count) {
-    if (error) *error = [NSError errorWithDomain:@"ModelPicker" code:3 userInfo:@{NSLocalizedDescriptionKey:@"Codex did not quit in time. Restart it manually."}];
-    return;
-  }
-  dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-  __block NSError *openError;
-  NSWorkspaceOpenConfiguration *configuration = [NSWorkspaceOpenConfiguration configuration];
-  configuration.activates = YES;
-  [[NSWorkspace sharedWorkspace] openApplicationAtURL:url configuration:configuration completionHandler:^(NSRunningApplication *app, NSError *resultError) {
-    openError = resultError;
-    dispatch_semaphore_signal(semaphore);
-  }];
-  dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC));
-  if (openError && error) *error = openError;
 }
 
 @end

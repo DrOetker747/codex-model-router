@@ -255,6 +255,19 @@ async function emitProbe() {
     : routedModels;
   const selectedModel = TARGET === "codex" ? configuredDefaultModel(CONFIG_PATH) : undefined;
   const codexConfig = TARGET === "codex" && !pickerProbe ? codexConfigSnapshot() : undefined;
+  let catalogState;
+  if (TARGET === "codex" && pickerProbe) {
+    try {
+      const catalog = readMergedCatalog();
+      catalogState = {
+        catalogUpdatedAt:
+          typeof catalog.catalogUpdatedAt === "string" ? catalog.catalogUpdatedAt : null,
+        restartRequired: true,
+      };
+    } catch {
+      catalogState = { catalogUpdatedAt: null, restartRequired: true };
+    }
+  }
 
   process.stdout.write(
     JSON.stringify({
@@ -273,6 +286,7 @@ async function emitProbe() {
         : {}),
       models,
       ...(selectedModel ? { selectedModel } : {}),
+      ...(catalogState || {}),
       ...(codexConfig
         ? {
             loginFree: Boolean(codexConfig.login_free),
@@ -562,6 +576,9 @@ function rollbackModelState(snapshots) {
     [PROVIDER_SELECTION_PATH, snapshots.providers],
     [MERGED_CATALOG_PATH, snapshots.catalog],
     [NATIVE_ALIAS_PATH, snapshots.aliases],
+    ...(snapshots.externalAgentsPath
+      ? [[snapshots.externalAgentsPath, snapshots.externalAgents]]
+      : []),
   ];
   let rollbackError;
   for (const [filePath, snapshot] of restoreTargets) {
@@ -622,24 +639,18 @@ async function setCodexModel(slug, restart = false) {
     throw new Error("Native GPT models are unavailable while login-free mode is active.");
   }
 
+  const agentCatalog = route ? await import("./codex-agent-catalog.mjs") : undefined;
   const snapshots = {
     config: snapshotFile(CONFIG_PATH),
     providers: snapshotFile(PROVIDER_SELECTION_PATH),
     catalog: snapshotFile(MERGED_CATALOG_PATH),
     aliases: snapshotFile(NATIVE_ALIAS_PATH),
     agents: snapshotManagedAgents(),
+    externalAgentsPath: agentCatalog?.EXTERNAL_AGENT_SELECTION_PATH,
+    externalAgents: agentCatalog
+      ? snapshotFile(agentCatalog.EXTERNAL_AGENT_SELECTION_PATH)
+      : undefined,
   };
-  if (route) {
-    const provider = PROVIDERS.get(route.provider);
-    if (!credentialStatus(provider, { persistent: true }).configured) {
-      throw new Error(`${value} is not an authenticated external model.`);
-    }
-    const current = readProviderSelection();
-    if (!current.includes(route.provider)) {
-      writeProviderSelection([...current, route.provider]);
-    }
-  }
-
   const rollback = (originalError) => {
     try {
       rollbackModelState(snapshots);
@@ -649,6 +660,26 @@ async function setCodexModel(slug, restart = false) {
       );
     }
   };
+
+  if (route) {
+    try {
+      const provider = PROVIDERS.get(route.provider);
+      if (!credentialStatus(provider, { persistent: true }).configured) {
+        throw new Error(`${value} is not an authenticated external model.`);
+      }
+      const current = readProviderSelection();
+      if (!current.includes(route.provider)) {
+        writeProviderSelection([...current, route.provider]);
+      }
+      const selectedProfiles = agentCatalog.readSelectedExternalAgentProfiles();
+      if (!selectedProfiles.includes(value)) {
+        agentCatalog.writeSelectedExternalAgentProfiles([...selectedProfiles, value]);
+      }
+    } catch (error) {
+      rollback(error);
+      throw error;
+    }
+  }
 
   if (route) {
     const catalog = spawnSync(
@@ -709,8 +740,49 @@ async function setCodexModel(slug, restart = false) {
       selectedModel: value,
       restartRequired: !restart,
       restarted: restart,
+      ...(route ? { subagentProfile: { selected: true, slug: value } } : {}),
     })}\n`,
   );
+}
+
+async function setExternalAgentProfile(slug, desired) {
+  const value = String(slug || "").trim();
+  if (!value || (desired !== "on" && desired !== "off")) {
+    throw new Error("Usage: control agent-profile-set <model-slug> <on|off>");
+  }
+  const { MODEL_BY_SLUG, PROVIDERS } = await import("./model-registry.mjs");
+  const { credentialStatus } = await import("./provider-credentials.mjs");
+  const agentCatalog = await import("./codex-agent-catalog.mjs");
+  const route = MODEL_BY_SLUG.get(value);
+  if (!route) throw new Error(`Unknown external model: ${value}`);
+  const provider = PROVIDERS.get(route.provider);
+  if (!credentialStatus(provider, { persistent: true }).configured) {
+    throw new Error(`${value} is not an authenticated external model.`);
+  }
+
+  const selectionSnapshot = snapshotFile(agentCatalog.EXTERNAL_AGENT_SELECTION_PATH);
+  const agentsSnapshot = snapshotManagedAgents();
+  const current = agentCatalog.readSelectedExternalAgentProfiles();
+  const next = desired === "on"
+    ? [...new Set([...current, value])]
+    : current.filter((profile) => profile !== value);
+  try {
+    const selectedProfiles = agentCatalog.writeSelectedExternalAgentProfiles(next);
+    const rebuilt = agentCatalog.rebuildExternalSubagentProfiles({
+      mergedCatalog: readMergedCatalog(),
+      selectedProfiles,
+    });
+    process.stdout.write(`${JSON.stringify({
+      slug: value,
+      selected: desired === "on",
+      selectedProfiles,
+      profile: rebuilt.externalProfiles.find((profile) => profile.slug === value) || null,
+    })}\n`);
+  } catch (error) {
+    restoreFile(agentCatalog.EXTERNAL_AGENT_SELECTION_PATH, selectionSnapshot);
+    restoreManagedAgents(agentsSnapshot);
+    throw error;
+  }
 }
 
 async function setNextTaskModel(slug, { restart = false } = {}) {
@@ -762,6 +834,8 @@ if (args.includes("--probe")) {
   process.stdout.write(`${JSON.stringify(modelCatalogSnapshot())}\n`);
 } else if (args[0] === "model-set") {
   await setNextTaskModel(args[1], { restart: restartOption() });
+} else if (args[0] === "agent-profile-set") {
+  await setExternalAgentProfile(args[1], args[2]);
 } else if (args[0] === "codex-restart") {
   runCodexRestart();
 } else if (args[0] === "maintenance") {

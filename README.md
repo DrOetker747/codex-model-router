@@ -1,7 +1,24 @@
-# Codex Router
+# Codex Model Router
 
-Use Anthropic, Kimi, DeepSeek, xAI, and future external models inside supported
-AI desktop apps through one local, credential-isolating router.
+Bring OpenRouter, Kimi, Qwen, DeepSeek, MiniMax, Grok, and other API models into
+Codex Desktop without replacing native OpenAI models or your ChatGPT login.
+
+It is a local, plug-and-play model layer for people who want combinations such
+as a native GPT model for backend work and Kimi for frontend work, or GPT plus
+Qwen, MiniMax, or DeepSeek for focused subagents.
+
+## What it solves
+
+- Keeps native OpenAI models and external API models in one Codex picker.
+- Refreshes supported provider catalogs every 15 minutes and after updates.
+- Shows only the newest suitable model from each family in the SOTA view while
+  keeping older models available for compatibility.
+- Lets an authenticated external model run as the main model or as a generated
+  Codex subagent profile.
+- Preserves Codex authentication, MCP servers, skills, project settings, and
+  native model behavior.
+- Reapplies and verifies the integration after Codex Desktop updates.
+- Keeps provider credentials in protected local files and never publishes them.
 
 | Target | Integration | Status |
 | --- | --- | --- |
@@ -23,7 +40,7 @@ For Codex, paste this into a Codex task:
 
 ```text
 Install the Codex target from this public repository:
-https://github.com/duolahypercho/codex-router
+https://github.com/DrOetker747/codex-model-router
 
 Follow AGENTS.md. Preserve my existing Codex models, profiles, settings, and
 ChatGPT login. Use only the provider authentication I choose, safely migrate
@@ -40,7 +57,7 @@ terminal prompt.
 Codex on macOS or Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/duolahypercho/codex-router/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/DrOetker747/codex-model-router/main/install.sh \
   | sh -s -- --target codex --guided
 ```
 
@@ -48,7 +65,7 @@ Windows PowerShell:
 
 ```powershell
 $installer = Join-Path $env:TEMP "codex-router-install.ps1"
-Invoke-WebRequest https://raw.githubusercontent.com/duolahypercho/codex-router/main/install.ps1 -OutFile $installer
+Invoke-WebRequest https://raw.githubusercontent.com/DrOetker747/codex-model-router/main/install.ps1 -OutFile $installer
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Target codex -Guided
 ```
 
@@ -85,8 +102,8 @@ Linux installations support the Codex CLI and the Cursor target's local gateway.
 | MiniMax M3 (Ollama Cloud) | `ollama-cloud/minimax-m3` | Ollama Cloud API key |
 | DeepSeek V4 Pro (Ollama Cloud) | `ollama-cloud/deepseek-v4-pro` | Ollama Cloud API key |
 | MiniMax M3 | `minimax-token-plan/minimax-m3` | MiniMax Token Plan API key |
-| Qwen3.7 Max (Plan) | `qwen-plan/qwen3.7-max` | Alibaba Model Studio plan API key |
-| Qwen3.7 Plus (Plan) | `qwen-plan/qwen3.7-plus` | Alibaba Model Studio plan API key |
+| Current Qwen Max (Plan) | Discovered from the live provider catalog | Alibaba Model Studio plan API key |
+| Current Qwen Plus (Plan) | Discovered from the live provider catalog | Alibaba Model Studio plan API key |
 | GLM-5.2 (Coding Plan) | `zai-coding/glm-5.2` | Z.ai GLM Coding Plan API key |
 | GLM-5-Turbo (Coding Plan) | `zai-coding/glm-5-turbo` | Z.ai GLM Coding Plan API key |
 
@@ -113,11 +130,11 @@ Kimi Code OAuth, Kimi Platform API, and OpenCode Go are separate authentication
 and billing systems. Their Kimi entries intentionally coexist. Older DeepSeek
 aliases remain hidden compatibility routes and are not advertised to new users.
 
-OpenCode Go reads its full model list from the provider's read-only `/models`
-catalog during installation and update. Newly published models are stored in
-protected local state, survive source updates, and use the provider's documented
-OpenAI, Anthropic, or Responses route by model family. Run the normal update
-command to load new entries into the picker:
+Enabled providers with model discovery read their live model catalogs during
+installation, every 15 minutes, and on an explicit refresh. Newly published
+models are stored in protected local state and survive source and Codex Desktop
+updates. A failed or malformed provider response keeps the last known good
+catalog instead of emptying the picker. Run an immediate refresh with:
 
 ```sh
 ./bin/model-router codex update
@@ -232,7 +249,16 @@ After setup:
 Codex loads `model_catalog_json` only at app startup. If models are still
 missing, run `./bin/refresh-catalog`, fully quit Codex, and reopen it.
 
-The integration preserves the built-in OpenAI provider, native GPT models,
+Selecting an authenticated external model also prepares its managed Codex
+subagent profile. SOTA-visible external models are prepared automatically;
+hidden compatible models can be enabled explicitly with:
+
+```sh
+./bin/control agent-profile-set 'openrouter/PROVIDER/MODEL' on
+```
+
+Generated profiles are marked `catalog-only` until a separate meaningful-text
+and tool-call test verifies that exact route. The integration preserves the built-in OpenAI provider, native GPT models,
 ChatGPT sign-in, profiles, MCP settings, project trust, and reasoning defaults.
 It adds one marked root block and one inert custom-provider table to the user's
 Codex config:
