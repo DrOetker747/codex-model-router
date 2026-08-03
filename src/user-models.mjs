@@ -32,6 +32,9 @@ export function userModelEntry({
   description,
   autoDiscovered,
   pickerVisibility,
+  catalogState,
+  catalogFetchedAt,
+  catalogAgeMs,
 }) {
   const gatewayModel = `${gatewaySafe(providerId)}-${gatewaySafe(upstreamId)}`;
   const entry = {
@@ -56,6 +59,9 @@ export function userModelEntry({
   if (protocol) entry.protocol = protocol;
   if (autoDiscovered) entry.autoDiscovered = autoDiscovered;
   if (pickerVisibility) entry.pickerVisibility = pickerVisibility;
+  if (catalogState) entry.catalogState = catalogState;
+  if (catalogFetchedAt) entry.catalogFetchedAt = catalogFetchedAt;
+  if (Number.isFinite(catalogAgeMs)) entry.catalogAgeMs = catalogAgeMs;
   return entry;
 }
 

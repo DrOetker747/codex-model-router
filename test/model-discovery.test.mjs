@@ -8,6 +8,56 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+test("model catalogs normalize duplicate ids and preserve qwen3.8-max", async () => {
+  const { normalizeModelCatalog } = await import("../src/model-discovery.mjs");
+  assert.deepEqual(
+    normalizeModelCatalog({
+      data: [
+        { id: " qwen3.8-max " },
+        { id: "qwen3.8-max" },
+        { id: "" },
+        { id: "grok-4.6" },
+      ],
+    }),
+    ["grok-4.6", "qwen3.8-max"],
+  );
+});
+
+test("provider catalog fetch reports invalid JSON, timeout, and non-2xx responses", async () => {
+  const { fetchProviderCatalog } = await import("../src/model-discovery.mjs");
+
+  await assert.rejects(
+    fetchProviderCatalog("opencode-go", {
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError("invalid json");
+        },
+      }),
+    }),
+    /invalid JSON/i,
+  );
+  await assert.rejects(
+    fetchProviderCatalog("opencode-go", {
+      fetchImpl: async () => {
+        throw new DOMException("timed out", "TimeoutError");
+      },
+    }),
+    /timed out|timeout/i,
+  );
+  await assert.rejects(
+    fetchProviderCatalog("opencode-go", {
+      fetchImpl: async () => ({
+        ok: false,
+        status: 503,
+        json: async () => ({ error: { message: "temporarily unavailable" } }),
+      }),
+    }),
+    /503|temporarily unavailable/i,
+  );
+});
+
 test("model discovery compares fixtures without needing or exposing a key", () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-discovery-"));
   const fixture = path.join(testRoot, "models.json");

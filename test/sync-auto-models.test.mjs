@@ -7,6 +7,65 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const functionStateDir = mkdtempSync(path.join(os.tmpdir(), "enabled-provider-sync-"));
+process.env.MODEL_ROUTER_STATE_DIR = functionStateDir;
+const { syncEnabledProviderCatalogs } = await import("../src/sync-auto-models.mjs");
+
+test.after(() => rmSync(functionStateDir, { recursive: true, force: true }));
+
+test("syncs two enabled providers, skips the disabled provider, and keeps qwen3.8-max", async () => {
+  const calls = [];
+  const fixtures = {
+    "opencode-go": { data: [{ id: "qwen3.8-max" }, { id: "qwen3.8-max" }] },
+    "opencode-free": { data: [{ id: "big-pickle" }] },
+    deepseek: { data: [{ id: "should-not-be-fetched" }] },
+  };
+
+  const result = await syncEnabledProviderCatalogs({
+    enabledProviders: ["opencode-go", "opencode-free"],
+    fetchCatalog: async (providerId) => {
+      calls.push(providerId);
+      return fixtures[providerId];
+    },
+    now: () => Date.parse("2026-08-03T10:00:00.000Z"),
+    sleep: async () => {},
+  });
+
+  assert.deepEqual(calls, ["opencode-go", "opencode-free"]);
+  assert.ok(result.models.some((model) => model.provider === "opencode-go" && model.upstreamModel === "qwen3.8-max"));
+  assert.ok(result.models.some((model) => model.provider === "opencode-free" && model.upstreamModel === "big-pickle"));
+  assert.equal(result.models.some((model) => model.upstreamModel === "should-not-be-fetched"), false);
+  assert.deepEqual(result.lkg["opencode-go"].models, ["qwen3.8-max"]);
+});
+
+test("retries a failed catalog with bounded backoff and preserves the previous LKG", async () => {
+  const calls = [];
+  const delays = [];
+  const first = await syncEnabledProviderCatalogs({
+    enabledProviders: ["opencode-go"],
+    fetchCatalog: async () => ({ data: [{ id: "qwen3.8-max" }] }),
+    now: () => Date.parse("2026-08-03T10:00:00.000Z"),
+    sleep: async (delay) => delays.push(delay),
+  });
+  assert.deepEqual(first.lkg["opencode-go"].models, ["qwen3.8-max"]);
+
+  const failed = await syncEnabledProviderCatalogs({
+    enabledProviders: ["opencode-go"],
+    fetchCatalog: async () => {
+      calls.push("failed");
+      throw new Error("catalog timeout");
+    },
+    now: () => Date.parse("2026-08-03T10:01:00.000Z"),
+    sleep: async (delay) => delays.push(delay),
+  });
+
+  assert.equal(calls.length, 3);
+  assert.ok(delays.length >= 2);
+  assert.ok(delays.every((delay) => delay <= 2_000));
+  assert.deepEqual(failed.lkg["opencode-go"].models, ["qwen3.8-max"]);
+  assert.equal(failed.lkg["opencode-go"].state, "unavailable");
+  assert.ok(failed.models.some((model) => model.upstreamModel === "qwen3.8-max"));
+});
 
 test("OpenCode Go catalog sync adds every new model with the correct protocol", () => {
   const testRoot = mkdtempSync(path.join(os.tmpdir(), "opencode-go-sync-"));

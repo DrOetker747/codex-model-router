@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.codexrouter.catalog-sync</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE_PATH__</string>
+    <string>__SOURCE_ROOT__/src/sync-auto-models.mjs</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__SOURCE_ROOT__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>MODEL_ROUTER_TARGET</key>
+    <string>__MODEL_ROUTER_TARGET__</string>
+    <key>MODEL_ROUTER_STATE_DIR</key>
+    <string>__MODEL_ROUTER_STATE_DIR__</string>
+    <key>CODEX_ROUTER_STATE_DIR</key>
+    <string>__MODEL_ROUTER_STATE_DIR__</string>
+    <key>MODEL_ROUTER_QUIET</key>
+    <string>1</string>
+    <key>CODEX_ROUTER_QUIET</key>
+    <string>1</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>__LOG_PATH__</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_PATH__</string>
+</dict>
+</plist>

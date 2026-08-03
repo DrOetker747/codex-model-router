@@ -44,6 +44,20 @@ test("userModelEntry omits requestProfile when the provider has none", () => {
   assert.equal(entry.requestProfile, undefined);
 });
 
+test("userModelEntry records catalog provenance when supplied", () => {
+  const entry = userModelEntry({
+    providerId: "opencode-go",
+    upstreamId: "qwen3.8-max",
+    priority: 100,
+    catalogState: "unavailable",
+    catalogFetchedAt: "2026-08-03T10:00:00.000Z",
+    catalogAgeMs: 60_000,
+  });
+  assert.equal(entry.catalogState, "unavailable");
+  assert.equal(entry.catalogFetchedAt, "2026-08-03T10:00:00.000Z");
+  assert.equal(entry.catalogAgeMs, 60_000);
+});
+
 test("user models round-trip through the protected state file", () => {
   const entries = [
     userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-vl-test", priority: 100 }),

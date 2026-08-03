@@ -85,7 +85,8 @@ function syncAutoModels() {
   if (result.error || result.status !== 0) return false;
   try {
     const payload = JSON.parse(result.stdout || "{}");
-    return payload.results?.some((entry) => entry.changed) || false;
+    const results = payload.results || payload.providers || [];
+    return results.some((entry) => entry.changed);
   } catch {
     return false;
   }

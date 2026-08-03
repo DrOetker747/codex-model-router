@@ -1,10 +1,26 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { discoverProviderModels } from "./model-discovery.mjs";
+import {
+  fetchProviderCatalog,
+  normalizeModelCatalog,
+} from "./model-discovery.mjs";
 import { PROVIDERS, STATIC_MODELS } from "./model-registry.mjs";
+import {
+  readProviderLkg,
+  unavailableLkg,
+  writeProviderLkg,
+} from "./catalog-lkg.mjs";
 import { credentialStatus } from "./provider-credentials.mjs";
+import { withCatalogSingleFlight } from "./service-operation-lock.mjs";
+import { STATE_DIR } from "./paths.mjs";
+import { readProviderSelection } from "./provider-selection.mjs";
 import { readUserModels, userModelEntry, writeUserModels } from "./user-models.mjs";
+
+export const CATALOG_SYNC_MAX_ATTEMPTS = 3;
+export const CATALOG_SYNC_BACKOFF_BASE_MS = 250;
+export const CATALOG_SYNC_BACKOFF_MAX_MS = 2_000;
+export const CATALOG_SYNC_LOCK_PATH = path.join(STATE_DIR, "catalog-sync");
 
 function modelLabel(id, providerName) {
   const label = String(id)
@@ -106,7 +122,13 @@ export function filteredDiscoveredModelIds(provider, discovered) {
     : unique;
 }
 
-export function mergeDiscoveredModels(providerId, discovered) {
+function catalogMetadata(metadata = {}) {
+  const result = {};
+  if (metadata.state) result.catalogState = metadata.state;
+  return result;
+}
+
+export function mergeDiscoveredModels(providerId, discovered, metadata = {}) {
   const provider = PROVIDERS.get(providerId);
   if (!provider?.autoSyncModels) {
     throw new Error(`Provider ${providerId} does not enable automatic model sync.`);
@@ -137,10 +159,11 @@ export function mergeDiscoveredModels(providerId, discovered) {
     .filter((id) => !registered.has(id) && !manualIds.has(id))
     .sort();
   const pickerIds = pickerModelIds(providerId, filtered);
+  const provenance = catalogMetadata(metadata);
   const synced = ids.map((id, index) => {
     const current = existingById.get(id);
     const pickerVisibility = pickerIds.has(id) ? "list" : "hide";
-    if (current) return { ...current, pickerVisibility };
+    if (current) return { ...current, pickerVisibility, ...provenance };
     return userModelEntry({
       providerId,
       upstreamId: id,
@@ -150,6 +173,7 @@ export function mergeDiscoveredModels(providerId, discovered) {
       description: `${modelLabel(id, provider.displayName)} discovered from the provider catalog with conservative compatibility metadata.`,
       autoDiscovered: providerId,
       pickerVisibility,
+      ...provenance,
     });
   });
   const next = [...others, ...synced];
@@ -159,15 +183,154 @@ export function mergeDiscoveredModels(providerId, discovered) {
   return { changed: true, path: writeUserModels(next), models: synced.length };
 }
 
-export async function syncProvider(providerId) {
-  const discovery = await discoverProviderModels(providerId);
-  const provider = PROVIDERS.get(providerId);
-  const filtered = filteredDiscoveredModelIds(provider, discovery.discovered);
-  return {
-    provider: providerId,
-    discovered: filtered.length,
-    ...mergeDiscoveredModels(providerId, discovery.discovered),
-  };
+function nowValue(now) {
+  const value = typeof now === "function" ? now() : now === undefined ? Date.now() : now;
+  if (!Number.isFinite(Number(value))) throw new Error("Catalog sync clock returned an invalid timestamp.");
+  return Number(value);
+}
+
+function providerIdOf(value) {
+  return typeof value === "string" ? value : value?.id;
+}
+
+function providerCandidates(enabledProviders, explicit) {
+  const values = enabledProviders === undefined
+    ? readProviderSelection()
+    : enabledProviders;
+  const ids = [...new Set(
+    (Array.isArray(values) ? values : [...values])
+      .map(providerIdOf)
+      .filter(Boolean),
+  )];
+  return ids
+    .map((providerId) => {
+      const provider = PROVIDERS.get(providerId);
+      if (!provider) throw new Error(`Unknown provider: ${providerId}`);
+      return provider;
+    })
+    .filter((provider) => provider.autoSyncModels)
+    .filter(
+      (provider) =>
+        explicit || credentialStatus(provider, { persistent: true }).configured,
+    );
+}
+
+function sleepFor(delay) {
+  return new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+async function fetchWithBackoff(provider, fetchCatalog, sleep) {
+  let lastError;
+  for (let attempt = 0; attempt < CATALOG_SYNC_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const payload = await fetchCatalog(provider.id, provider);
+      const source = payload?.discovered !== undefined ? payload.discovered : payload;
+      return {
+        models: normalizeModelCatalog(source),
+        attempts: attempt + 1,
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (attempt === CATALOG_SYNC_MAX_ATTEMPTS - 1) break;
+      const delay = Math.min(
+        CATALOG_SYNC_BACKOFF_MAX_MS,
+        CATALOG_SYNC_BACKOFF_BASE_MS * 2 ** attempt,
+      );
+      await sleep(delay);
+    }
+  }
+  throw Object.assign(new Error(`Provider ${provider.id} catalog sync failed.`), {
+    attempts: CATALOG_SYNC_MAX_ATTEMPTS,
+    cause: lastError,
+  });
+}
+
+function failureMessage(error) {
+  if (error?.message && /timed out|timeout/i.test(error.message)) {
+    return `Provider catalog request timed out after ${CATALOG_SYNC_MAX_ATTEMPTS} attempts.`;
+  }
+  if (error?.message && /invalid json/i.test(error.message)) {
+    return "Provider catalog returned invalid JSON after retries.";
+  }
+  return "Provider catalog was unavailable after retries.";
+}
+
+function modelEntries(providerId, modelIds) {
+  const wanted = new Set(modelIds);
+  return readUserModels().filter(
+    (model) =>
+      model.provider === providerId &&
+      model.autoDiscovered === providerId &&
+      wanted.has(model.upstreamModel),
+  );
+}
+
+export async function syncEnabledProviderCatalogs({
+  enabledProviders,
+  fetchCatalog = (providerId) => fetchProviderCatalog(providerId),
+  now = Date.now,
+  sleep = sleepFor,
+} = {}) {
+  const explicit = enabledProviders !== undefined;
+  const clock = nowValue(now);
+  const providers = [];
+  const models = [];
+  const lkg = {};
+
+  for (const provider of providerCandidates(enabledProviders, explicit)) {
+    let record = readProviderLkg(provider.id, { now: clock });
+    let catalogModels = record?.state === "invalid" ? [] : record?.models || [];
+    let attempts = 0;
+    let error;
+    try {
+      const fetched = await fetchWithBackoff(provider, fetchCatalog, sleep);
+      attempts = fetched.attempts;
+      catalogModels = fetched.models;
+      writeProviderLkg(provider.id, {
+        models: catalogModels,
+        fetchedAt: new Date(clock).toISOString(),
+      });
+      record = readProviderLkg(provider.id, { now: clock });
+    } catch (fetchError) {
+      attempts = fetchError?.attempts || CATALOG_SYNC_MAX_ATTEMPTS;
+      error = failureMessage(fetchError);
+      record = unavailableLkg(record, { now: clock });
+      catalogModels = record.state === "invalid" ? [] : record.models;
+    }
+
+    const filtered = filteredDiscoveredModelIds(provider, catalogModels);
+    const merged = mergeDiscoveredModels(provider.id, catalogModels, record);
+    const entries = modelEntries(provider.id, filtered);
+    models.push(...entries);
+    const result = {
+      provider: provider.id,
+      discovered: filtered.length,
+      attempts,
+      state: record.state,
+      models: merged.models,
+      changed: merged.changed,
+    };
+    if (merged.path) result.path = merged.path;
+    if (error) result.error = error;
+    providers.push(result);
+    lkg[provider.id] = record;
+  }
+
+  return { providers, models, lkg };
+}
+
+export async function syncProvider(providerId, options = {}) {
+  if (!PROVIDERS.has(providerId)) throw new Error(`Unknown provider: ${providerId}`);
+  if (!PROVIDERS.get(providerId).autoSyncModels) {
+    throw new Error(`Provider ${providerId} does not enable automatic model sync.`);
+  }
+  const result = await syncEnabledProviderCatalogs({
+    enabledProviders: [providerId],
+    fetchCatalog: options.fetchCatalog || ((id) => fetchProviderCatalog(id, options)),
+    now: options.now,
+    sleep: options.sleep,
+  });
+  return result.providers[0];
 }
 
 async function main() {
@@ -178,17 +341,12 @@ async function main() {
     return;
   }
   const requested = process.argv.slice(2).find((value) => !value.startsWith("--"));
-  const ids = requested
-    ? [requested]
-    : [...PROVIDERS.values()]
-        .filter(
-          (provider) =>
-            provider.autoSyncModels && credentialStatus(provider, { persistent: true }).configured,
-        )
-        .map((provider) => provider.id);
-  const results = [];
-  for (const id of ids) results.push(await syncProvider(id));
-  process.stdout.write(`${JSON.stringify({ results }, null, 2)}\n`);
+  const result = await withCatalogSingleFlight(CATALOG_SYNC_LOCK_PATH, () =>
+    syncEnabledProviderCatalogs({
+      enabledProviders: requested ? [requested] : undefined,
+    }),
+  );
+  process.stdout.write(`${JSON.stringify({ ...result, results: result.providers }, null, 2)}\n`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

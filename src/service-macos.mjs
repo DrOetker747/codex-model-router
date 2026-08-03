@@ -3,6 +3,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -22,12 +23,21 @@ import {
 
 const command = process.argv[2] || "status";
 const effectivePlatform = process.env.CODEX_ROUTER_SERVICE_PLATFORM || process.platform;
-if (effectivePlatform !== "darwin" && command !== "render") {
+if (effectivePlatform !== "darwin" && !["render", "render-catalog-sync"].includes(command)) {
   throw new Error("The launchd service manager runs on macOS only.");
 }
 const userId = typeof process.getuid === "function" ? process.getuid() : 501;
 const domain = `gui/${userId}`;
 const service = `${domain}/${SERVICE_LABEL}`;
+const CATALOG_SYNC_LABEL = "com.codexrouter.catalog-sync";
+const catalogSyncService = `${domain}/${CATALOG_SYNC_LABEL}`;
+const catalogSyncAgentPath = path.join(path.dirname(LAUNCH_AGENT_PATH), `${CATALOG_SYNC_LABEL}.plist`);
+const catalogSyncTemplatePath = path.join(
+  SOURCE_ROOT,
+  "config",
+  "launchd",
+  `${CATALOG_SYNC_LABEL}.plist`,
+);
 const launchctl = "/bin/launchctl";
 const launchctlRetryWait = new Int32Array(new SharedArrayBuffer(4));
 
@@ -147,17 +157,40 @@ function writePlist() {
   renameSync(temporary, LAUNCH_AGENT_PATH);
 }
 
-function bootstrap() {
-  if (!existsSync(LAUNCH_AGENT_PATH)) {
-    throw new Error(`LaunchAgent is not installed at ${LAUNCH_AGENT_PATH}.`);
+function catalogSyncPlist() {
+  const values = {
+    __NODE_PATH__: process.execPath,
+    __SOURCE_ROOT__: SOURCE_ROOT,
+    __MODEL_ROUTER_TARGET__: TARGET,
+    __MODEL_ROUTER_STATE_DIR__: STATE_DIR,
+    __LOG_PATH__: LOG_PATH,
+  };
+  return readFileSync(catalogSyncTemplatePath, "utf8").replace(
+    /__(NODE_PATH|SOURCE_ROOT|MODEL_ROUTER_TARGET|MODEL_ROUTER_STATE_DIR|LOG_PATH)__/g,
+    (token) => xml(values[token]),
+  );
+}
+
+function writeCatalogSyncPlist() {
+  mkdirSync(path.dirname(catalogSyncAgentPath), { recursive: true });
+  mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+  const temporary = `${catalogSyncAgentPath}.tmp.${process.pid}`;
+  writeFileSync(temporary, catalogSyncPlist(), { encoding: "utf8", mode: 0o644 });
+  chmodSync(temporary, 0o644);
+  renameSync(temporary, catalogSyncAgentPath);
+}
+
+function bootstrap(targetService = service, targetPath = LAUNCH_AGENT_PATH) {
+  if (!existsSync(targetPath)) {
+    throw new Error(`LaunchAgent is not installed at ${targetPath}.`);
   }
-  run(["enable", service], { quiet: true });
+  run(["enable", targetService], { quiet: true });
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
-      run(["bootstrap", domain, LAUNCH_AGENT_PATH], { quiet: true });
+      run(["bootstrap", domain, targetPath], { quiet: true });
       return;
     } catch (error) {
-      const description = loaded();
+      const description = loaded(targetService);
       if (description && !/state = SIGTERM/.test(description)) return;
       if (error?.status !== 5 || attempt === 19) throw error;
       Atomics.wait(launchctlRetryWait, 0, 0, 100);
@@ -165,52 +198,80 @@ function bootstrap() {
   }
 }
 
-if (!new Set(["install", "uninstall", "start", "stop", "restart", "status", "render"]).has(command)) {
-  console.error("Usage: service-macos.mjs install|uninstall|start|stop|restart|status|render");
+if (!new Set(["install", "uninstall", "start", "stop", "restart", "status", "render", "render-catalog-sync"]).has(command)) {
+  console.error("Usage: service-macos.mjs install|uninstall|start|stop|restart|status|render|render-catalog-sync");
   process.exit(2);
 }
 
 if (command === "render") {
   process.stdout.write(plist());
+} else if (command === "render-catalog-sync") {
+  process.stdout.write(catalogSyncPlist());
 } else if (command === "status") {
   const description = loaded();
+  const catalogDescription = loaded(catalogSyncService);
   const installed = existsSync(LAUNCH_AGENT_PATH);
+  const catalogSyncInstalled = existsSync(catalogSyncAgentPath);
   const isLoaded = Boolean(description) && installed;
+  const catalogSyncLoaded = Boolean(catalogDescription) && catalogSyncInstalled;
   const state = isLoaded
     ? description?.match(/state = ([^\n]+)/)?.[1]?.trim() || "loaded"
+    : "stopped";
+  const catalogSyncState = catalogSyncLoaded
+    ? catalogDescription?.match(/state = ([^\n]+)/)?.[1]?.trim() || "loaded"
     : "stopped";
   process.stdout.write(
     `${JSON.stringify({
       installed,
       loaded: isLoaded,
       state,
+      catalogSyncInstalled,
+      catalogSyncLoaded,
+      catalogSyncState,
     })}\n`,
   );
 } else if (command === "install") {
   bootout();
+  bootout(catalogSyncService);
   writePlist();
-  bootstrap();
-  process.stdout.write(`${JSON.stringify({ installed: true, path: LAUNCH_AGENT_PATH })}\n`);
+  writeCatalogSyncPlist();
+  bootstrap(service, LAUNCH_AGENT_PATH);
+  bootstrap(catalogSyncService, catalogSyncAgentPath);
+  process.stdout.write(`${JSON.stringify({ installed: true, path: LAUNCH_AGENT_PATH, catalogSyncPath: catalogSyncAgentPath })}\n`);
 } else if (command === "uninstall") {
   bootout();
+  bootout(catalogSyncService);
   try {
     run(["disable", service], { quiet: true });
   } catch {
     // Best effort.
   }
+  try {
+    run(["disable", catalogSyncService], { quiet: true });
+  } catch {
+    // Best effort.
+  }
   if (existsSync(LAUNCH_AGENT_PATH)) unlinkSync(LAUNCH_AGENT_PATH);
+  if (existsSync(catalogSyncAgentPath)) unlinkSync(catalogSyncAgentPath);
   process.stdout.write(`${JSON.stringify({ installed: false })}\n`);
 } else if (command === "stop") {
   bootout();
+  bootout(catalogSyncService);
   process.stdout.write(`${JSON.stringify({ state: "stopped" })}\n`);
 } else if (command === "start") {
   if (!loaded()) bootstrap();
-  process.stdout.write(`${JSON.stringify({ state: "running" })}\n`);
+  if (!loaded(catalogSyncService)) bootstrap(catalogSyncService, catalogSyncAgentPath);
+  process.stdout.write(`${JSON.stringify({ state: "running", catalogSync: "running" })}\n`);
 } else if (command === "restart") {
   if (loaded()) {
     run(["kickstart", "-k", service], { quiet: true });
   } else {
     bootstrap();
   }
-  process.stdout.write(`${JSON.stringify({ state: "running" })}\n`);
+  if (loaded(catalogSyncService)) {
+    run(["kickstart", "-k", catalogSyncService], { quiet: true });
+  } else {
+    bootstrap(catalogSyncService, catalogSyncAgentPath);
+  }
+  process.stdout.write(`${JSON.stringify({ state: "running", catalogSync: "running" })}\n`);
 }

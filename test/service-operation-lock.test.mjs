@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { withServiceOperationLock } from "../src/service-operation-lock.mjs";
+import {
+  withCatalogSingleFlight,
+  withServiceOperationLock,
+} from "../src/service-operation-lock.mjs";
 
 test("service operation lock rejects overlap and releases afterward", { timeout: 5_000 }, async () => {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), "codex-router-service-lock-"));
@@ -60,6 +63,48 @@ test("service operation lock rejects overlap and releases afterward", { timeout:
     );
   } finally {
     allowFirstToFinish();
+    await first.catch(() => {});
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("catalog single-flight lock rejects overlap and releases after failure", { timeout: 5_000 }, async () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "codex-router-catalog-lock-"));
+  const lockPath = path.join(stateDir, "catalog-sync.lock");
+  let releaseFirst;
+  const firstMayFinish = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  let firstEntered;
+  const entered = new Promise((resolve) => {
+    firstEntered = resolve;
+  });
+
+  const first = withCatalogSingleFlight(lockPath, async () => {
+    firstEntered();
+    await firstMayFinish;
+    return "first";
+  });
+  try {
+    await entered;
+    await assert.rejects(
+      withCatalogSingleFlight(lockPath, async () => "overlap"),
+      /catalog sync is already running/i,
+    );
+    releaseFirst();
+    assert.equal(await first, "first");
+    await assert.rejects(
+      withCatalogSingleFlight(lockPath, async () => {
+        throw new Error("catalog failed");
+      }),
+      /catalog failed/,
+    );
+    assert.equal(
+      await withCatalogSingleFlight(lockPath, async () => "after failure"),
+      "after failure",
+    );
+  } finally {
+    releaseFirst();
     await first.catch(() => {});
     rmSync(stateDir, { recursive: true, force: true });
   }
