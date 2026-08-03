@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -447,6 +455,166 @@ test("model-set safely selects authenticated, native, and login-free models", ()
       /unavailable while login-free/,
       "model-set must reject native models in login-free mode",
     );
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("model catalog and selection preserve native state and support an explicit restart", () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-native-catalog-"));
+  const configPath = path.join(stateDir, "config.toml");
+  const credentialsPath = path.join(stateDir, "deepseek-api-key.secret");
+  const skillsPath = path.join(stateDir, "skills.toml");
+  const restartScript = path.join(stateDir, "mock-restart.mjs");
+  const restartLog = path.join(stateDir, "restart.log");
+  writeFileSync(
+    configPath,
+    `model = "gpt-5.6-sol"\nmodel_provider = "openai"\n\n[mcp_servers.local]\ncommand = "keep-me"\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    path.join(stateDir, "enabled-providers.json"),
+    `${JSON.stringify({ version: 1, providers: ["kimi-api"] })}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(credentialsPath, "test-provider-secret\n", { mode: 0o600 });
+  writeFileSync(skillsPath, "skill = \"keep-me\"\n", { mode: 0o600 });
+  writeFileSync(
+    path.join(stateDir, "caller-secret"),
+    "test-control-caller-capability-with-sufficient-length\n",
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    path.join(stateDir, "native-models.json"),
+    `${JSON.stringify({
+      models: [{ slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" }],
+    })}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    path.join(stateDir, "merged-models.json"),
+    `${JSON.stringify({
+      catalogUpdatedAt: "2026-08-03T12:00:00.000Z",
+      models: [
+        { slug: "gpt-5.6-sol", display_name: "GPT-5.6-Sol", visibility: "list" },
+        {
+          slug: "deepseek/deepseek-v4-pro",
+          display_name: "DeepSeek V4 Pro",
+          visibility: "list",
+        },
+      ],
+    })}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    restartScript,
+    `import { appendFileSync } from "node:fs"; appendFileSync(process.env.CODEX_ROUTER_RESTART_LOG, "called\\n");\n`,
+    { mode: 0o600 },
+  );
+  chmodSync(restartScript, 0o700);
+
+  const environment = {
+    ...process.env,
+    CODEX_HOME: stateDir,
+    CODEX_BIN: "/usr/bin/true",
+    CODEX_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_TARGET: "codex",
+    CODEX_ROUTER_RESTART_COMMAND: process.execPath,
+    CODEX_ROUTER_RESTART_ARGS: JSON.stringify([restartScript]),
+    CODEX_ROUTER_RESTART_LOG: restartLog,
+  };
+  const runControl = (...commandArgs) =>
+    JSON.parse(
+      execFileSync(
+        process.execPath,
+        [path.join(root, "src", "control.mjs"), ...commandArgs],
+        { cwd: root, encoding: "utf8", env: environment },
+      ),
+    );
+
+  try {
+    execFileSync(
+      process.execPath,
+      [path.join(root, "src", "config-manager.mjs"), "enable"],
+      { cwd: root, encoding: "utf8", env: environment },
+    );
+    const beforeSkill = readFileSync(skillsPath);
+    const beforeCredentialMode = statSync(credentialsPath).mode;
+    const catalog = runControl("model-catalog", "--json");
+    assert.equal(catalog.catalogUpdatedAt, "2026-08-03T12:00:00.000Z");
+    assert.equal(catalog.restartRequired, true);
+    assert.deepEqual(
+      catalog.models.map((model) => model.slug),
+      ["gpt-5.6-sol", "deepseek/deepseek-v4-pro"],
+    );
+
+    const saved = runControl("model-set", "deepseek/deepseek-v4-pro", "--restart=false");
+    assert.equal(saved.selectedModel, "deepseek/deepseek-v4-pro");
+    assert.equal(saved.restartRequired, true);
+    assert.equal(saved.restarted, false);
+    assert.match(readFileSync(configPath, "utf8"), /\[mcp_servers\.local\]/);
+    assert.deepEqual(readFileSync(skillsPath), beforeSkill);
+    assert.equal(statSync(credentialsPath).mode, beforeCredentialMode);
+    assert.equal(
+      JSON.parse(readFileSync(path.join(stateDir, "enabled-providers.json"), "utf8"))
+        .providers.includes("deepseek"),
+      true,
+    );
+    assert.equal(
+      readdirSync(stateDir).some((name) => name.startsWith("config.toml.tmp.")),
+      false,
+    );
+
+    const restarted = runControl("model-set", "gpt-5.6-sol", "--restart=true");
+    assert.equal(restarted.selectedModel, "gpt-5.6-sol");
+    assert.equal(restarted.restarted, true);
+    assert.equal(restarted.restartRequired, false);
+    assert.equal(readFileSync(restartLog, "utf8"), "called\n");
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("failed catalog rebuild restores disabled-provider selection and model config", () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "control-catalog-rollback-"));
+  const configPath = path.join(stateDir, "config.toml");
+  const providersPath = path.join(stateDir, "enabled-providers.json");
+  writeFileSync(configPath, `model = "gpt-5.6-sol"\n`, { mode: 0o600 });
+  writeFileSync(
+    providersPath,
+    `${JSON.stringify({ version: 1, providers: ["kimi-api"] })}\n`,
+    { mode: 0o600 },
+  );
+  writeFileSync(path.join(stateDir, "deepseek-api-key.secret"), "test-provider-secret\n", {
+    mode: 0o600,
+  });
+  writeFileSync(path.join(stateDir, "caller-secret"), "test-control-caller-capability-with-sufficient-length\n", {
+    mode: 0o600,
+  });
+  writeFileSync(path.join(stateDir, "native-models.json"), JSON.stringify({ models: [] }), {
+    mode: 0o600,
+  });
+  const environment = {
+    ...process.env,
+    CODEX_HOME: stateDir,
+    CODEX_BIN: "/usr/bin/true",
+    CODEX_ROUTER_STATE_DIR: stateDir,
+    MODEL_ROUTER_TARGET: "codex",
+  };
+  const originalConfig = readFileSync(configPath);
+  const originalProviders = readFileSync(providersPath);
+  try {
+    assert.throws(
+      () =>
+        execFileSync(
+          process.execPath,
+          [path.join(root, "src", "control.mjs"), "model-set", "deepseek/deepseek-v4-pro"],
+          { cwd: root, encoding: "utf8", env: environment, stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      /catalog|Native model catalog/i,
+    );
+    assert.deepEqual(readFileSync(configPath), originalConfig);
+    assert.deepEqual(readFileSync(providersPath), originalProviders);
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
   }

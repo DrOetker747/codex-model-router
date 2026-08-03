@@ -242,12 +242,16 @@ function nativeTarget(pathname, search) {
   return `${NATIVE_BASE}${withoutV1}${search}`;
 }
 
-function catalogModels() {
+function catalogSnapshot() {
   try {
     const parsed = JSON.parse(readFileSync(CATALOG_PATH, "utf8"));
-    return Array.isArray(parsed.models) ? parsed.models : [];
+    return {
+      models: Array.isArray(parsed.models) ? parsed.models : [],
+      catalogUpdatedAt:
+        typeof parsed.catalogUpdatedAt === "string" ? parsed.catalogUpdatedAt : undefined,
+    };
   } catch {
-    return [];
+    return { models: [], catalogUpdatedAt: undefined };
   }
 }
 
@@ -509,14 +513,19 @@ async function handleRoutedCompaction(response, payload, route, signal, v2) {
 }
 
 async function handleModels(response) {
-  const data = catalogModels().map((model) => ({
+  const catalog = catalogSnapshot();
+  const data = catalog.models.map((model) => ({
     id: model.slug,
     object: "model",
     owned_by: MODEL_BY_SLUG.has(model.slug)
       ? providerForModel(MODEL_BY_SLUG.get(model.slug)).ownedBy
       : "openai",
   }));
-  writeJson(response, 200, { object: "list", data });
+  writeJson(response, 200, {
+    object: "list",
+    ...(catalog.catalogUpdatedAt ? { catalogUpdatedAt: catalog.catalogUpdatedAt } : {}),
+    data,
+  });
 }
 
 function requireCodexTransport(request, response) {

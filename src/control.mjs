@@ -1,7 +1,25 @@
+import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { protectPrivateFile } from "./file-security.mjs";
+import {
+  CONFIG_PATH,
+  MERGED_CATALOG_PATH,
+  NATIVE_ALIAS_PATH,
+  NATIVE_CATALOG_PATH,
+  PROVIDER_SELECTION_PATH,
+} from "./paths.mjs";
 
 // Cross-target control plane for a tray/UI (e.g. the planned pane fork). It
 // reads which registry models are enabled per target and toggles them. Toggling
@@ -37,6 +55,62 @@ function configuredDefaultModel(configPath) {
   const firstTable = config.search(/^\s*\[/m);
   const root = firstTable === -1 ? config : config.slice(0, firstTable);
   return root.match(/^\s*model\s*=\s*["']([^"']+)["']/m)?.[1];
+}
+
+function snapshotFile(filePath) {
+  if (!existsSync(filePath)) return { exists: false };
+  return {
+    exists: true,
+    contents: readFileSync(filePath),
+    mode: statSync(filePath).mode & 0o777,
+  };
+}
+
+function restoreFile(filePath, snapshot) {
+  if (!snapshot.exists) {
+    if (existsSync(filePath)) unlinkSync(filePath);
+    return;
+  }
+  mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  const temporary = `${filePath}.tmp.rollback.${process.pid}.${randomUUID()}`;
+  try {
+    writeFileSync(temporary, snapshot.contents, { mode: snapshot.mode });
+    protectPrivateFile(temporary);
+    renameSync(temporary, filePath);
+    protectPrivateFile(filePath);
+  } catch (error) {
+    if (existsSync(temporary)) unlinkSync(temporary);
+    throw error;
+  }
+}
+
+function readMergedCatalog() {
+  if (!existsSync(MERGED_CATALOG_PATH)) {
+    throw new Error(`Codex model catalog is missing at ${MERGED_CATALOG_PATH}.`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(MERGED_CATALOG_PATH, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `Codex model catalog is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.models)) {
+    throw new Error("Codex model catalog is invalid: models must be an array.");
+  }
+  return parsed;
+}
+
+function modelCatalogSnapshot() {
+  const catalog = readMergedCatalog();
+  return {
+    models: catalog.models,
+    catalogUpdatedAt:
+      typeof catalog.catalogUpdatedAt === "string" ? catalog.catalogUpdatedAt : null,
+    selectedModel: configuredDefaultModel(CONFIG_PATH) || null,
+    restartRequired: true,
+  };
 }
 
 function codexConfigSnapshot() {
@@ -410,11 +484,111 @@ async function setLoginFreeMode(desired) {
   process.stdout.write(result.stdout);
 }
 
-async function setCodexModel(slug) {
+function restartOverride() {
+  const command = process.env.CODEX_ROUTER_RESTART_COMMAND;
+  const rawArgs = process.env.CODEX_ROUTER_RESTART_ARGS;
+  const testOverride = process.env.NODE_ENV === "test" || process.env.CODEX_ROUTER_RESTART_LOG;
+  if (!testOverride || (!command && !rawArgs)) return undefined;
+  if (!command || !rawArgs) {
+    throw new Error("Both CODEX_ROUTER_RESTART_COMMAND and CODEX_ROUTER_RESTART_ARGS are required.");
+  }
+  let parsedArgs;
+  try {
+    parsedArgs = JSON.parse(rawArgs);
+  } catch (error) {
+    throw new Error(
+      `CODEX_ROUTER_RESTART_ARGS must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!Array.isArray(parsedArgs) || parsedArgs.some((value) => typeof value !== "string")) {
+    throw new Error("CODEX_ROUTER_RESTART_ARGS must be a JSON array of strings.");
+  }
+  return { command, args: parsedArgs };
+}
+
+function restartCodexApp() {
+  const override = restartOverride();
+  if (override) {
+    const result = spawnSync(override.command, override.args, {
+      cwd: REPO_ROOT,
+      env: process.env,
+      encoding: "utf8",
+    });
+    if (result.error || result.status !== 0) {
+      throw new Error(
+        (result.stderr || result.error?.message || "Codex graceful restart failed.").trim(),
+      );
+    }
+    return;
+  }
+
+  if (process.platform !== "darwin") {
+    throw new Error("Codex graceful restart is available only on macOS.");
+  }
+  const quit = spawnSync(
+    "/usr/bin/osascript",
+    ["-e", 'tell application id "com.openai.codex" to quit'],
+    { encoding: "utf8" },
+  );
+  if (quit.error || quit.status !== 0) {
+    throw new Error(
+      (quit.stderr || quit.error?.message || "Codex did not accept a graceful quit request.").trim(),
+    );
+  }
+  const reopen = spawnSync("/usr/bin/open", ["-b", "com.openai.codex"], {
+    encoding: "utf8",
+  });
+  if (reopen.error || reopen.status !== 0) {
+    throw new Error(
+      (reopen.stderr || reopen.error?.message || "Codex could not be reopened.").trim(),
+    );
+  }
+}
+
+function rollbackModelState(snapshots) {
+  const restoreTargets = [
+    [CONFIG_PATH, snapshots.config],
+    [PROVIDER_SELECTION_PATH, snapshots.providers],
+    [MERGED_CATALOG_PATH, snapshots.catalog],
+    [NATIVE_ALIAS_PATH, snapshots.aliases],
+  ];
+  let rollbackError;
+  for (const [filePath, snapshot] of restoreTargets) {
+    try {
+      restoreFile(filePath, snapshot);
+    } catch (error) {
+      rollbackError ||= error;
+    }
+  }
+  if (rollbackError) {
+    throw new Error(
+      `Model selection rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+    );
+  }
+}
+
+function restartOption() {
+  const inline = args.find((value) => value.startsWith("--restart="));
+  const separate = args.indexOf("--restart");
+  const value = inline
+    ? inline.slice("--restart=".length)
+    : separate === -1
+      ? undefined
+      : args[separate + 1];
+  if (value === undefined) return false;
+  if (value !== "true" && value !== "false") {
+    throw new Error("Usage: control model-set <model-slug> [--restart=true|false]");
+  }
+  if (inline && separate !== -1) {
+    throw new Error("Usage: control model-set <model-slug> [--restart=true|false]");
+  }
+  return value === "true";
+}
+
+async function setCodexModel(slug, restart = false) {
   const value = String(slug || "").trim();
   if (!value) throw new Error("Usage: control model-set <model-slug>");
   const config = codexConfigSnapshot();
-  const { NATIVE_CATALOG_PATH } = await import("./paths.mjs");
   const { MODEL_BY_SLUG, PROVIDERS } = await import("./model-registry.mjs");
   const {
     readProviderSelection,
@@ -429,7 +603,12 @@ async function setCodexModel(slug) {
     throw new Error("Native GPT models are unavailable while login-free mode is active.");
   }
 
-  let previousProviders;
+  const snapshots = {
+    config: snapshotFile(CONFIG_PATH),
+    providers: snapshotFile(PROVIDER_SELECTION_PATH),
+    catalog: snapshotFile(MERGED_CATALOG_PATH),
+    aliases: snapshotFile(NATIVE_ALIAS_PATH),
+  };
   if (route) {
     const provider = PROVIDERS.get(route.provider);
     if (!credentialStatus(provider, { persistent: true }).configured) {
@@ -437,19 +616,18 @@ async function setCodexModel(slug) {
     }
     const current = readProviderSelection();
     if (!current.includes(route.provider)) {
-      previousProviders = current;
       writeProviderSelection([...current, route.provider]);
     }
   }
 
-  const rollback = () => {
-    if (!previousProviders) return;
-    writeProviderSelection(previousProviders);
-    spawnSync(process.execPath, [path.join(REPO_ROOT, "src", "catalog.mjs")], {
-      cwd: REPO_ROOT,
-      env: { ...process.env, MODEL_ROUTER_TARGET: "codex" },
-      stdio: "ignore",
-    });
+  const rollback = (originalError) => {
+    try {
+      rollbackModelState(snapshots);
+    } catch (rollbackError) {
+      throw new Error(
+        `${originalError instanceof Error ? originalError.message : String(originalError)}; ${rollbackError.message}`,
+      );
+    }
   };
 
   if (route) {
@@ -463,8 +641,9 @@ async function setCodexModel(slug) {
       },
     );
     if (catalog.status !== 0) {
-      rollback();
-      throw new Error((catalog.stderr || "Codex model catalog could not be refreshed.").trim());
+      const error = new Error((catalog.stderr || "Codex model catalog could not be refreshed.").trim());
+      rollback(error);
+      throw error;
     }
   }
 
@@ -483,10 +662,35 @@ async function setCodexModel(slug) {
     },
   );
   if (result.status !== 0) {
-    rollback();
-    throw new Error((result.stderr || "The Codex model could not be changed.").trim());
+    const error = new Error((result.stderr || "The Codex model could not be changed.").trim());
+    rollback(error);
+    throw error;
   }
-  process.stdout.write(result.stdout);
+
+  if (restart) {
+    try {
+      restartCodexApp();
+    } catch (error) {
+      rollback(error);
+      throw error;
+    }
+  }
+
+  let saved;
+  try {
+    saved = JSON.parse(result.stdout);
+  } catch (error) {
+    rollback(error);
+    throw new Error("The Codex model change returned invalid JSON.");
+  }
+  process.stdout.write(
+    `${JSON.stringify({
+      ...saved,
+      selectedModel: value,
+      restartRequired: !restart,
+      restarted: restart,
+    })}\n`,
+  );
 }
 
 async function updateAndVerifyCodex() {
@@ -522,8 +726,13 @@ if (args.includes("--probe")) {
   await saveProviderCredential(args[1]);
 } else if (args[0] === "auth-mode") {
   await setLoginFreeMode(args[1]);
+} else if (args[0] === "model-catalog") {
+  if (!args.includes("--json")) {
+    throw new Error("Usage: control model-catalog --json");
+  }
+  process.stdout.write(`${JSON.stringify(modelCatalogSnapshot())}\n`);
 } else if (args[0] === "model-set") {
-  await setCodexModel(args[1]);
+  await setCodexModel(args[1], restartOption());
 } else if (args[0] === "maintenance") {
   await updateAndVerifyCodex();
 } else {
