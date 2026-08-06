@@ -1266,7 +1266,8 @@
       "contextWindow": 262144,
       "autoCompact": 235000,
       "inputModalities": [
-        "text"
+        "text",
+        "image"
       ],
       "compHash": "opencode-go-kimi-k3-v1"
     },
@@ -1289,7 +1290,8 @@
       "contextWindow": 262144,
       "autoCompact": 235000,
       "inputModalities": [
-        "text"
+        "text",
+        "image"
       ],
       "compHash": "opencode-go-kimi-k2-7-code-v1"
     },
