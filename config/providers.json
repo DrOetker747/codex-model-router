@@ -1768,15 +1768,23 @@
       "displayName": "DeepSeek V4 Flash Free (opencode Zen)",
       "description": "Free DeepSeek V4 Flash through OpenCode Zen; fast reasoning, tool calls, limited-time free tier.",
       "priority": 60,
-      "defaultEffort": "high",
+      "defaultEffort": "max",
       "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
         {
           "effort": "high",
           "description": "Deep reasoning"
         },
         {
           "effort": "max",
-          "description": "Maximum reasoning"
+          "description": "Maximum reasoning for complex agent work"
         }
       ],
       "contextWindow": 1048576,
@@ -1795,11 +1803,23 @@
       "displayName": "MiMo-V2.5 Free (opencode Zen)",
       "description": "Free MiMo-V2.5 through OpenCode Zen; lightweight coding model, limited-time free tier.",
       "priority": 61,
-      "defaultEffort": "high",
+      "defaultEffort": "max",
       "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
         {
           "effort": "high",
           "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning for complex agent work"
         }
       ],
       "contextWindow": 131072,
@@ -1818,11 +1838,23 @@
       "displayName": "Laguna S 2.1 Free (opencode Zen)",
       "description": "Free Laguna S 2.1 through OpenCode Zen; limited-time free tier.",
       "priority": 62,
-      "defaultEffort": "high",
+      "defaultEffort": "max",
       "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
         {
           "effort": "high",
           "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning for complex agent work"
         }
       ],
       "contextWindow": 131072,
@@ -1841,11 +1873,23 @@
       "displayName": "Ling-3.0-flash Free (opencode Zen)",
       "description": "Free Ling 3.0 Flash through OpenCode Zen; fast responses, limited-time free tier.",
       "priority": 63,
-      "defaultEffort": "high",
+      "defaultEffort": "max",
       "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
         {
           "effort": "high",
           "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning for complex agent work"
         }
       ],
       "contextWindow": 131072,
@@ -1864,11 +1908,23 @@
       "displayName": "LongCat-2.0 Free (opencode Zen)",
       "description": "Free LongCat 2.0 through OpenCode Zen; long-context coding model, limited-time free tier.",
       "priority": 64,
-      "defaultEffort": "high",
+      "defaultEffort": "max",
       "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
         {
           "effort": "high",
           "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning for complex agent work"
         }
       ],
       "contextWindow": 131072,
@@ -1887,11 +1943,23 @@
       "displayName": "North Mini Code Free (opencode Zen)",
       "description": "Free North Mini Code through OpenCode Zen; limited-time free tier, data may be used to improve the model.",
       "priority": 65,
-      "defaultEffort": "high",
+      "defaultEffort": "max",
       "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
         {
           "effort": "high",
           "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning for complex agent work"
         }
       ],
       "contextWindow": 131072,
@@ -1910,11 +1978,23 @@
       "displayName": "Nemotron 3 Ultra Free (opencode Zen)",
       "description": "Free Nemotron 3 Ultra through OpenCode Zen; NVIDIA trial endpoint, limited-time free tier.",
       "priority": 66,
-      "defaultEffort": "high",
+      "defaultEffort": "max",
       "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
         {
           "effort": "high",
           "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning for complex agent work"
         }
       ],
       "contextWindow": 131072,
@@ -1933,11 +2013,23 @@
       "displayName": "Big Pickle (opencode Zen)",
       "description": "Free stealth model through OpenCode Zen; limited-time free tier, data may be used to improve the model.",
       "priority": 67,
-      "defaultEffort": "high",
+      "defaultEffort": "max",
       "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Fast responses with lighter reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
         {
           "effort": "high",
           "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning for complex agent work"
         }
       ],
       "contextWindow": 131072,

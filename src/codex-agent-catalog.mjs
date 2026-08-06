@@ -32,12 +32,14 @@ export function routedAgentDefinition(model) {
   const fileStem = `router-model-${safeIdentifier(slug, "-")}`;
   const agentName = `router_${safeIdentifier(slug, "_")}`;
   const displayName = String(model.displayName || model.display_name || slug).trim();
+  const reasoningEffort = String(model.defaultEffort || model.default_reasoning_level || "").trim();
   const contents = [
     "# Managed by Codex Router. Refresh the model catalog to update this file.",
     `name = ${tomlString(agentName)}`,
     `description = ${tomlString(`${displayName} agent routed through an authenticated Codex Router provider.`)}`,
     'model_provider = "codex-router"',
     `model = ${tomlString(slug)}`,
+    ...(reasoningEffort ? [`model_reasoning_effort = ${tomlString(reasoningEffort)}`] : []),
     "",
     'developer_instructions = """',
     "Complete the bounded task assigned by the parent agent.",

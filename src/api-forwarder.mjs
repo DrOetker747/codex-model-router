@@ -1,5 +1,6 @@
 import http from "node:http";
 import path from "node:path";
+import { Transform } from "node:stream";
 
 import { createRotationState, ROTATE_ON_STATUS } from "./api-key-rotation.mjs";
 import {
@@ -193,6 +194,47 @@ function ensureToolResultsForCalls(messages) {
 function sanitizeChatToolHistory(messages) {
   if (!Array.isArray(messages)) return messages;
   return ensureToolResultsForCalls(coalesceAssistantMessages(messages));
+}
+
+// Some upstreams (notably MiniMax through the opencode Go gateway) emit
+// `chat.completion.chunk` SSE events with an empty `choices` array. That is a
+// protocol violation — streaming chunks must carry at least one choice —
+// and LiteLLM's streaming translator dereferences `choices[0]`, killing the
+// whole stream with `list index out of range` right before completion. Drop
+// such events line-by-line so the translated stream ends with a clean
+// completion instead of a 500. Empty-choice chunks never carry content.
+function sseSanitizer() {
+  let pending = "";
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      pending += chunk.toString("utf8");
+      const lines = pending.split("\n");
+      pending = lines.pop() || "";
+      for (const line of lines) {
+        if (line.startsWith("data:") && !line.startsWith("data: [DONE]")) {
+          const json = line.slice(5).trim();
+          try {
+            const parsed = JSON.parse(json);
+            if (
+              Array.isArray(parsed?.choices) &&
+              parsed.choices.length === 0 &&
+              (parsed.object === "chat.completion.chunk" || !parsed.object)
+            ) {
+              continue;
+            }
+          } catch {
+            // Continuation lines and non-JSON payloads pass through untouched.
+          }
+        }
+        this.push(`${line}\n`);
+      }
+      callback();
+    },
+    flush(callback) {
+      if (pending) this.push(pending);
+      callback();
+    },
+  });
 }
 
 function normalizeBody(buffer, contentType, route) {
@@ -455,7 +497,15 @@ async function handleRequest(request, response) {
     });
     return;
   }
-  await pipeResponse(upstream, response);
+  const streaming =
+    String(upstream.headers.get("content-type") || "").includes("text/event-stream") &&
+    normalized.provider.protocol !== "anthropic";
+  await pipeResponse(
+    upstream,
+    response,
+    undefined,
+    streaming ? sseSanitizer() : undefined,
+  );
   // Harvest the provider's own quota report from the response it just sent.
   // Costs no extra request and works for any provider that emits the standard
   // headers, so a newly added provider reports limits without bespoke code.
