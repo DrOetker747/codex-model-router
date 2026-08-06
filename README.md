@@ -16,6 +16,57 @@ external catalog in one clean list.
 > This fork adds **multi-key quota rotation**, **free OpenCode Zen models**, a
 > **duplicate-free model picker**, and a **parallel CLI agent runner**.
 
+### Subagent architecture: many models, one task, agents that talk to each other
+
+Every routed model gets its own agent profile, so Codex can spawn subagents
+with completely different models — a GPT parent handing bounded work to a
+DeepSeek V4 Flash subagent, a Kimi K3 subagent for frontend, or a free model
+for trivial chores.
+
+Beyond the in-app subagents (which share the parent thread natively), the
+router can fan out **any task to any number of models at once** as CLI agents:
+
+```
+┌────────────┐   run-agents    ┌─────────────────────────┐
+│  main agent│───────────────▶ │  opencode-zen/laguna    │──▶ file + log
+│ (Codex app)│   --models a,b  │  opencode-go/minimax-m3 │──▶ file + log
+└─────┬──────┘                 │  opencode-go/deepseek   │──▶ file + log
+      │                        └───────────┬─────────────┘
+      └────────── mailbox (bin/agent-msg) ──┘
+         agents read & send messages to each other and to you
+```
+
+Each agent works in its own directory, writes its own output, and
+communicates through a shared mailbox — they can ask each other for reviews,
+hand off files, or report progress. The main agent can join the same mailbox
+and coordinate the whole swarm. Verified end-to-end: two free models greeted
+each other, replied, and recorded the exchange.
+
+### Get it running in one line
+
+**Terminal (macOS/Linux):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DrOetker747/codex-model-router/main/install.sh | sh
+```
+
+**Windows PowerShell:**
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+irm https://raw.githubusercontent.com/DrOetker747/codex-model-router/main/install.ps1 | iex
+```
+
+**Or just paste this into Codex, opencode, or any coding agent:**
+
+> Install the Codex Model Router from https://github.com/DrOetker747/codex-model-router
+> using the official install script, configure my opencode Go API key (ask me
+> for it), refresh the model catalog, and make sure the router service is
+> running and Codex is pointed at it. Preserve my native GPT models, my
+> ChatGPT login, my MCP servers and my skills. Do not publish or commit any
+> API keys. Then tell me how to pick DeepSeek or the free models in the Codex
+> picker and how to run several models on one task at once.
+
 ---
 
 ## Why you want this
