@@ -230,6 +230,57 @@ reopen Codex.
 
 ---
 
+## FAQ
+
+**Can I use DeepSeek in Codex Desktop / ChatGPT app?**
+Yes. Codex Model Router adds DeepSeek V4 Flash, DeepSeek V4 Pro and a free
+DeepSeek V4 Flash tier to the native Codex model picker, next to your GPT
+models. Everything runs through a local gateway on `127.0.0.1` — nothing is
+sent to a third-party cloud proxy.
+
+**How do I use free models in Codex?**
+The router ships with 8 verified free models from OpenCode Zen (Big Pickle,
+DeepSeek V4 Flash Free, MiMo-V2.5 Free, Laguna S 2.1 Free, Ling-3.0-flash
+Free, LongCat-2.0 Free, North Mini Code Free, Nemotron 3 Ultra Free). Pick
+them in the Codex model picker like any other model; they cost $0.
+
+**Can I keep my ChatGPT subscription while using external models?**
+Yes — that is the core design. Native GPT requests are forwarded through your
+own authenticated ChatGPT session, so GPT-5.6 Sol / Luna / Terra keep using
+your subscription. External models use your opencode Go key or your own API
+keys.
+
+**What happens when my opencode Go quota runs out?**
+The router automatically rotates to the next configured API key (up to 5 per
+provider) within seconds, marks the exhausted key down for 10 minutes and
+retries the request. No more "quota exceeded" walls.
+
+**How do I run several models on the same task at once?**
+`./bin/run-agents --task "..." --models "model-a,model-b,model-c"` spawns
+them in parallel as CLI agents, each with its own working directory, logs and
+output files. Agents can coordinate through a shared mailbox
+(`bin/agent-msg`).
+
+**Do I need to open any ports or expose my machine?**
+No. The router listens only on `127.0.0.1` (loopback). No inbound network
+exposure, no cloud proxy, no telemetry.
+
+**Is my API key safe?**
+Keys are stored in protected local files (mode 0600) or macOS Keychain and
+are only sent to the provider you configured. This repository contains no
+secrets and the install never publishes any.
+
+**Does it work on Windows / Linux?**
+Yes. Native installers exist for macOS/Linux (`install.sh`) and Windows
+(`install.ps1`), plus a menu-bar/tray companion app.
+
+**Which models are supported?**
+Native GPT family, DeepSeek, Kimi, Qwen, GLM, MiniMax, Grok, MiMo, HY3,
+Anthropic API models, xAI, z.ai, OpenRouter, Groq, Mistral, Cerebras, NVIDIA
+NIM, Hugging Face, Gemini — plus the 8 free OpenCode Zen models.
+
+---
+
 ## Roadmap
 
 - [x] Native + external merged model picker
