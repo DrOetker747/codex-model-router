@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+- **Parallel CLI agent runner.** `bin/run-agents` spawns any set of models
+  simultaneously as `codex exec` agents outside the Codex panel: each agent
+  gets its own output file prefix, log and final message under
+  `<workdir>/agents-run/logs/`, with optional effort override, concurrency
+  cap, timeout and JSON progress. The runner auto-detects the ChatGPT desktop
+  bundle binary or the `codex` CLI.
+
+- **Streaming sanitization.** Some upstreams (MiniMax via the opencode Go
+  gateway) emit `chat.completion.chunk` SSE events with an empty `choices`
+  array — a protocol violation that crashed LiteLLM's streaming translator
+  with `list index out of range` right before completion. The API forwarder
+  now filters invalid chunks, so such models stream to a clean
+  `response.completed`.
+
+- **Free OpenCode Zen models advertise their full reasoning range.** All eight
+  free models verify low/medium/high/max against the live API; the catalog now
+  exposes every level in the picker (all selectable) with `max` as the default
+  reasoning effort.
+
+- **Subagent profiles pin a supported reasoning effort.** Agent profiles now
+  set `model_reasoning_effort` to the model's default so batch spawning never
+  aborts on effort mismatches, and the managed Codex config raises the
+  concurrent agent thread limit so many subagents can run at once.
+
+- **Multi-key quota rotation with automatic failover.** A provider can now hold
+  up to five API keys (`provider-key <id> set --slot N`). When the upstream
+  reports a spent key (401/402/429), the API forwarder marks that slot as
+  exhausted for a 10-minute cooldown, switches to the next slot, and retries the
+  same request — no more mid-task quota walls. Exhaustion state is persisted in
+  the state directory so a service restart does not hammer a spent key, and the
+  sticky last-used slot means healthy keys keep being preferred. The forwarder
+  health endpoint reports the configured slot count per provider.
+
+- **Free OpenCode Zen models.** Eight zero-cost models are now part of the
+  catalog under the `opencode-zen` provider (same key as opencode Go, served
+  from `https://opencode.ai/zen/v1`): Big Pickle, DeepSeek V4 Flash Free,
+  MiMo-V2.5 Free, Laguna S 2.1 Free, Ling-3.0-flash Free, LongCat-2.0 Free,
+  North Mini Code Free, and Nemotron 3 Ultra Free. All are verified working
+  through the gateway.
+
+- **Duplicate-free model picker.** Protocol variants (for example
+  `opencode-go-messages/qwen3.8-max` alongside `opencode-go/qwen3.8-max`)
+  republished identical display names into the Codex picker. The catalog now
+  deduplicates by display identity, preferring the canonical family entry, so
+  every model appears exactly once while all variant slugs stay routable.
+
 - **Codex updates now refresh the tray for every supported install location.**
   Guided setup installs the companion at `~/Applications/Model Router.app`,
   but updates only refreshed the tray when the checkout's own `dist/Model
