@@ -156,6 +156,21 @@ the ChatGPT desktop app or the `codex` CLI.
 CLI agents share your `~/.codex` configuration — MCP servers, rules, skills —
 so they behave like a normal Codex session, minus the desktop-only plugins.
 
+**Agents can talk to each other.** Every run creates a shared mailbox at
+`<outDir>/mailbox/` and each agent gets its own id plus the exact commands to
+read and send messages. Agents coordinate by calling:
+
+```bash
+~/.local/share/codex-router/bin/agent-msg send --mailbox DIR --from MY_ID --to OTHER_ID --message "text"
+~/.local/share/codex-router/bin/agent-msg read --mailbox DIR --as MY_ID
+```
+
+The main Codex agent can join the same mailbox (pass `--mailbox DIR` to reuse
+a mailbox across runs), post instructions, and collect answers — verified
+end-to-end with two agents exchanging greetings and replies. In the Codex
+desktop app itself, native subagents already communicate with the main agent
+through the shared thread.
+
 ---
 
 ## Managing keys
