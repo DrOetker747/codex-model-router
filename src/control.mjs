@@ -1,36 +1,14 @@
-import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import {
-  appendFileSync,
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { protectPrivateFile } from "./file-security.mjs";
-import {
-  CONFIG_PATH,
-  CODEX_AGENTS_DIR,
-  MERGED_CATALOG_PATH,
-  NATIVE_ALIAS_PATH,
-  NATIVE_CATALOG_PATH,
-  PROVIDER_SELECTION_PATH,
-} from "./paths.mjs";
 
 // Cross-target control plane for a tray/UI (e.g. the planned pane fork). It
 // reads which registry models are enabled per target and toggles them. Toggling
 // only rewrites each target's provider selection; making it live is a separate
 // explicit `apply`, so a toggle never silently restarts a running target.
 
-const TARGETS = ["codex", "cursor"];
+const TARGETS = ["codex"];
 const SELF = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(SELF), "..");
 const args = process.argv.slice(2);
@@ -61,96 +39,6 @@ function configuredDefaultModel(configPath) {
   return root.match(/^\s*model\s*=\s*["']([^"']+)["']/m)?.[1];
 }
 
-function snapshotFile(filePath) {
-  if (!existsSync(filePath)) return { exists: false };
-  return {
-    exists: true,
-    contents: readFileSync(filePath),
-    mode: statSync(filePath).mode & 0o777,
-  };
-}
-
-function restoreFile(filePath, snapshot) {
-  if (!snapshot.exists) {
-    if (existsSync(filePath)) unlinkSync(filePath);
-    return;
-  }
-  mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const temporary = `${filePath}.tmp.rollback.${process.pid}.${randomUUID()}`;
-  try {
-    writeFileSync(temporary, snapshot.contents, { mode: snapshot.mode });
-    protectPrivateFile(temporary);
-    renameSync(temporary, filePath);
-    protectPrivateFile(filePath);
-    chmodSync(filePath, snapshot.mode);
-  } catch (error) {
-    if (existsSync(temporary)) unlinkSync(temporary);
-    throw error;
-  }
-}
-
-const managedAgentName = /^router-model-[a-z0-9-]+\.toml$/;
-const managedAgentMarker = "# Managed by Codex Router.";
-
-function isManagedAgent(snapshot) {
-  return snapshot.exists && snapshot.contents.toString("utf8").startsWith(managedAgentMarker);
-}
-
-function snapshotManagedAgents() {
-  const snapshots = new Map();
-  if (!existsSync(CODEX_AGENTS_DIR)) return snapshots;
-  for (const entry of readdirSync(CODEX_AGENTS_DIR, { withFileTypes: true })) {
-    if (!entry.isFile() || !managedAgentName.test(entry.name)) continue;
-    const target = path.join(CODEX_AGENTS_DIR, entry.name);
-    const snapshot = snapshotFile(target);
-    if (isManagedAgent(snapshot)) snapshots.set(entry.name, snapshot);
-  }
-  return snapshots;
-}
-
-function restoreManagedAgents(original) {
-  if (existsSync(CODEX_AGENTS_DIR)) {
-    for (const entry of readdirSync(CODEX_AGENTS_DIR, { withFileTypes: true })) {
-      if (!entry.isFile() || !managedAgentName.test(entry.name)) continue;
-      const target = path.join(CODEX_AGENTS_DIR, entry.name);
-      const current = snapshotFile(target);
-      if (isManagedAgent(current) && !original.has(entry.name)) unlinkSync(target);
-    }
-  }
-  for (const [name, snapshot] of original) {
-    restoreFile(path.join(CODEX_AGENTS_DIR, name), snapshot);
-  }
-}
-
-function readMergedCatalog() {
-  if (!existsSync(MERGED_CATALOG_PATH)) {
-    throw new Error(`Codex model catalog is missing at ${MERGED_CATALOG_PATH}.`);
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync(MERGED_CATALOG_PATH, "utf8"));
-  } catch (error) {
-    throw new Error(
-      `Codex model catalog is invalid: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.models)) {
-    throw new Error("Codex model catalog is invalid: models must be an array.");
-  }
-  return parsed;
-}
-
-function modelCatalogSnapshot() {
-  const catalog = readMergedCatalog();
-  return {
-    models: catalog.models,
-    catalogUpdatedAt:
-      typeof catalog.catalogUpdatedAt === "string" ? catalog.catalogUpdatedAt : null,
-    selectedModel: configuredDefaultModel(CONFIG_PATH) || null,
-    restartRequired: true,
-  };
-}
-
 function codexConfigSnapshot() {
   const result = spawnSync(
     process.execPath,
@@ -169,26 +57,8 @@ function nativeCodexModels(catalogPath) {
   if (!existsSync(catalogPath)) return [];
   try {
     const parsed = JSON.parse(readFileSync(catalogPath, "utf8"));
-    const listed = (Array.isArray(parsed.models) ? parsed.models : [])
-      .filter((model) => model.visibility === "list" && typeof model.slug === "string");
-    const versions = [...new Set(
-      listed
-        .map((model) => String(model.slug).match(/^gpt-(\d+)\.(\d+)(?:-|$)/))
-        .filter(Boolean)
-        .map((match) => `${match[1]}.${match[2]}`),
-    )]
-      .sort((left, right) => {
-        const [leftMajor, leftMinor] = left.split(".").map(Number);
-        const [rightMajor, rightMinor] = right.split(".").map(Number);
-        return rightMajor - leftMajor || rightMinor - leftMinor;
-      })
-      .slice(0, 2);
-    const currentVersions = new Set(versions);
-    return listed
-      .filter((model) => {
-        const match = String(model.slug).match(/^gpt-(\d+)\.(\d+)(?:-|$)/);
-        return !match || currentVersions.has(`${match[1]}.${match[2]}`);
-      })
+    return (Array.isArray(parsed.models) ? parsed.models : [])
+      .filter((model) => model.visibility === "list" && typeof model.slug === "string")
       .map((model) => ({
         slug: model.slug,
         displayName: model.display_name || model.slug,
@@ -196,29 +66,10 @@ function nativeCodexModels(catalogPath) {
         gatewayModel: model.slug,
         enabled: true,
         native: true,
-        pickerVisibility: "list",
-        family: modelFamily(model.slug, model.display_name || model.slug),
       }));
   } catch {
     return [];
   }
-}
-
-function modelFamily(slug, displayName = "") {
-  const value = `${slug} ${displayName}`.toLowerCase();
-  const families = [
-    ["deepseek", "DeepSeek"],
-    ["minimax", "MiniMax"],
-    ["big-pickle", "Free"],
-    ["qwen", "Qwen"],
-    ["kimi", "Kimi"],
-    ["grok", "Grok"],
-    ["mimo", "MiMo"],
-    ["glm", "GLM"],
-    ["hy", "HY"],
-    ["gpt", "GPT"],
-  ];
-  return families.find(([needle]) => value.includes(needle))?.[1] || "Other";
 }
 
 // --- per-target probes (run with MODEL_ROUTER_TARGET set) -------------------
@@ -230,63 +81,44 @@ async function emitProbe() {
     TARGET,
     PROVIDER_SELECTION_PATH,
   } = await import("./paths.mjs");
-  const { configuredProviderIds, readProviderSelection } = await import("./provider-selection.mjs");
+  const { canonicalProviderId, readProviderSelection } = await import("./provider-selection.mjs");
   const { LISTED_MODELS, PROVIDERS } = await import("./model-registry.mjs");
   const { readNativeAliases } = await import("./native-alias.mjs");
 
-  const pickerProbe = args.includes("--picker");
   const enabledProviders = readProviderSelection();
-  const configuredProviders = new Set(configuredProviderIds());
-  const usageEvents = TARGET === "codex" && !pickerProbe
+  const usageEvents = TARGET === "codex"
     ? (await import("./usage-events.mjs")).recentUsageEvents()
     : [];
+  // The tray groups models by provider to build its rows, so protocol
+  // variants report their canonical family id: one opencode Go row, not three.
   const routedModels = LISTED_MODELS.map((model) => ({
     slug: model.slug,
     displayName: model.displayName,
-    provider: model.provider,
+    provider: canonicalProviderId(model.provider),
     gatewayModel: model.gatewayModel,
-    enabled: enabledProviders.includes(model.provider) && configuredProviders.has(model.provider),
-    native: false,
-    pickerVisibility: model.pickerVisibility || "list",
-    family: modelFamily(model.slug, model.displayName),
+    enabled: enabledProviders.includes(model.provider),
   }));
   const models = TARGET === "codex"
     ? [...nativeCodexModels(NATIVE_CATALOG_PATH), ...routedModels]
     : routedModels;
   const selectedModel = TARGET === "codex" ? configuredDefaultModel(CONFIG_PATH) : undefined;
-  const codexConfig = TARGET === "codex" && !pickerProbe ? codexConfigSnapshot() : undefined;
-  let catalogState;
-  if (TARGET === "codex" && pickerProbe) {
-    try {
-      const catalog = readMergedCatalog();
-      catalogState = {
-        catalogUpdatedAt:
-          typeof catalog.catalogUpdatedAt === "string" ? catalog.catalogUpdatedAt : null,
-        restartRequired: true,
-      };
-    } catch {
-      catalogState = { catalogUpdatedAt: null, restartRequired: true };
-    }
-  }
+  const codexConfig = TARGET === "codex" ? codexConfigSnapshot() : undefined;
 
   process.stdout.write(
     JSON.stringify({
       target: TARGET,
       configured: existsSync(PROVIDER_SELECTION_PATH),
-      ...(!pickerProbe ? { active: targetIsActive(TARGET) } : {}),
+      active: targetIsActive(TARGET),
       enabledProviders,
-      ...(!pickerProbe
-        ? {
-            providers: [...PROVIDERS.values()].map((provider) => ({
-              id: provider.id,
-              displayName: provider.displayName,
-              kind: provider.kind,
-            })),
-          }
-        : {}),
+      providers: [...PROVIDERS.values()]
+        .filter((provider) => !provider.variantOf)
+        .map((provider) => ({
+          id: provider.id,
+          displayName: provider.displayName,
+          kind: provider.kind,
+        })),
       models,
       ...(selectedModel ? { selectedModel } : {}),
-      ...(catalogState || {}),
       ...(codexConfig
         ? {
             loginFree: Boolean(codexConfig.login_free),
@@ -294,10 +126,7 @@ async function emitProbe() {
           }
         : {}),
       ...(TARGET === "codex"
-        ? {
-            ...(!pickerProbe ? { usageEvents } : {}),
-            nativeAliases: readNativeAliases(),
-          }
+        ? { usageEvents, nativeAliases: readNativeAliases() }
         : {}),
     }),
   );
@@ -305,19 +134,14 @@ async function emitProbe() {
 
 async function emitProbeSet(provider, desired) {
   const { TARGET } = await import("./paths.mjs");
-  const { readProviderSelection, writeProviderSelection } = await import("./provider-selection.mjs");
+  const { disableProvider, enableProvider } = await import("./provider-selection.mjs");
   const { PROVIDERS } = await import("./model-registry.mjs");
   if (!PROVIDERS.has(provider)) throw new Error(`Unknown provider: ${provider}`);
   if (desired !== "on" && desired !== "off") throw new Error("state must be on or off");
 
-  const current = readProviderSelection();
-  const next =
-    desired === "on"
-      ? current.includes(provider)
-        ? current
-        : [...current, provider]
-      : current.filter((id) => id !== provider);
-  writeProviderSelection(next);
+  // The selection helpers own variant-family semantics: toggling a provider
+  // that has protocol variants (or is one) toggles the whole family.
+  const next = desired === "on" ? enableProvider(provider) : disableProvider(provider);
   process.stdout.write(JSON.stringify({ target: TARGET, enabledProviders: next }));
 }
 
@@ -465,6 +289,14 @@ async function saveProviderCredential(providerId) {
   process.stdout.write(`${JSON.stringify(providerOnboardingSnapshot())}\n`);
 }
 
+async function deleteProviderCredential(providerId) {
+  const { providerOnboardingSnapshot, removeApiCredential } = await import("./provider-onboarding.mjs");
+  const removal = removeApiCredential(providerId);
+  process.stdout.write(
+    `${JSON.stringify({ ...providerOnboardingSnapshot(), removal })}\n`,
+  );
+}
+
 async function setLoginFreeMode(desired) {
   if (desired !== "on" && desired !== "off") {
     throw new Error("Usage: control auth-mode <on|off>");
@@ -507,7 +339,6 @@ async function setLoginFreeMode(desired) {
         ...process.env,
         MODEL_ROUTER_TARGET: "codex",
         MODEL_ROUTER_LOGIN_FREE: desired === "on" ? "1" : "0",
-        MODEL_ROUTER_SKIP_AGENT_REGISTRATION: "1",
       },
       encoding: "utf8",
     },
@@ -534,185 +365,25 @@ async function setLoginFreeMode(desired) {
   if (result.status !== 0) {
     throw new Error((result.stderr || "Codex provider mode could not be changed.").trim());
   }
-  const agentCatalog = await import("./codex-agent-catalog.mjs");
-  const { syncExternalAgentRegistrations } = await import("./codex-agent-registration.mjs");
-  const rebuilt = agentCatalog.rebuildExternalSubagentProfiles({
-    mergedCatalog: readMergedCatalog(),
-  });
-  syncExternalAgentRegistrations(rebuilt.externalProfiles);
   process.stdout.write(result.stdout);
 }
 
-function restartCodexApp() {
-  if (process.env.NODE_ENV === "test") {
-    const marker = process.env.CODEX_ROUTER_TEST_RESTART_MARKER;
-    if (!marker || !path.isAbsolute(marker)) {
-      throw new Error("The test restart marker is missing.");
-    }
-    appendFileSync(marker, "called\n", { encoding: "utf8", mode: 0o600 });
-    return;
-  }
-
-  if (process.platform !== "darwin") {
-    throw new Error("Codex graceful restart is available only on macOS.");
-  }
-  const quit = spawnSync(
-    "/usr/bin/osascript",
-    ["-e", 'tell application id "com.openai.codex" to quit'],
-    { encoding: "utf8", env: {} },
-  );
-  if (quit.error || quit.status !== 0) {
-    throw new Error(
-      (quit.stderr || quit.error?.message || "Codex did not accept a graceful quit request.").trim(),
-    );
-  }
-  const reopen = spawnSync("/usr/bin/open", ["-b", "com.openai.codex"], {
-    encoding: "utf8",
-    env: {},
-  });
-  if (reopen.error || reopen.status !== 0) {
-    throw new Error(
-      (reopen.stderr || reopen.error?.message || "Codex could not be reopened.").trim(),
-    );
-  }
-}
-
-function rollbackModelState(snapshots) {
-  const restoreTargets = [
-    [CONFIG_PATH, snapshots.config],
-    [PROVIDER_SELECTION_PATH, snapshots.providers],
-    [MERGED_CATALOG_PATH, snapshots.catalog],
-    [NATIVE_ALIAS_PATH, snapshots.aliases],
-    ...(snapshots.externalAgentsPath
-      ? [[snapshots.externalAgentsPath, snapshots.externalAgents]]
-      : []),
-  ];
-  let rollbackError;
-  for (const [filePath, snapshot] of restoreTargets) {
-    try {
-      restoreFile(filePath, snapshot);
-    } catch (error) {
-      rollbackError ||= error;
-    }
-  }
-  try {
-    restoreManagedAgents(snapshots.agents);
-  } catch (error) {
-    rollbackError ||= error;
-  }
-  if (rollbackError) {
-    throw new Error(
-      `Model selection rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
-    );
-  }
-}
-
-function restartOption() {
-  const inline = args.find((value) => value.startsWith("--restart="));
-  const separate = args.indexOf("--restart");
-  const value = inline
-    ? inline.slice("--restart=".length)
-    : separate === -1
-      ? undefined
-      : args[separate + 1];
-  if (separate !== -1 && separate === args.length - 1) {
-    throw new Error("Usage: control model-set <model-slug> [--restart=true|false]");
-  }
-  if (value === undefined) return false;
-  if (value !== "true" && value !== "false") {
-    throw new Error("Usage: control model-set <model-slug> [--restart=true|false]");
-  }
-  if (inline && separate !== -1) {
-    throw new Error("Usage: control model-set <model-slug> [--restart=true|false]");
-  }
-  return value === "true";
-}
-
-async function setCodexModel(slug, restart = false) {
+async function setLoginFreeModel(slug) {
   const value = String(slug || "").trim();
   if (!value) throw new Error("Usage: control model-set <model-slug>");
   const config = codexConfigSnapshot();
-  const { MODEL_BY_SLUG, PROVIDERS } = await import("./model-registry.mjs");
-  const {
-    readProviderSelection,
-    writeProviderSelection,
-  } = await import("./provider-selection.mjs");
-  const { credentialStatus } = await import("./provider-credentials.mjs");
-  const route = MODEL_BY_SLUG.get(value);
-  const nativeModels = nativeCodexModels(NATIVE_CATALOG_PATH);
-  const native = nativeModels.some((model) => model.slug === value);
-  if (!route && !native) throw new Error(`Unknown Codex model: ${value}`);
-  if (native && config?.login_free) {
-    throw new Error("Native GPT models are unavailable while login-free mode is active.");
+  if (!config?.login_free) {
+    throw new Error("Switching the tray model requires login-free mode.");
   }
-
-  const agentCatalog = route ? await import("./codex-agent-catalog.mjs") : undefined;
-  const snapshots = {
-    config: snapshotFile(CONFIG_PATH),
-    providers: snapshotFile(PROVIDER_SELECTION_PATH),
-    catalog: snapshotFile(MERGED_CATALOG_PATH),
-    aliases: snapshotFile(NATIVE_ALIAS_PATH),
-    agents: snapshotManagedAgents(),
-    externalAgentsPath: agentCatalog?.EXTERNAL_AGENT_SELECTION_PATH,
-    externalAgents: agentCatalog
-      ? snapshotFile(agentCatalog.EXTERNAL_AGENT_SELECTION_PATH)
-      : undefined,
-  };
-  const rollback = (originalError) => {
-    try {
-      rollbackModelState(snapshots);
-    } catch (rollbackError) {
-      throw new Error(
-        `${originalError instanceof Error ? originalError.message : String(originalError)}; ${rollbackError.message}`,
-      );
-    }
-  };
-
-  if (route) {
-    try {
-      const provider = PROVIDERS.get(route.provider);
-      if (!credentialStatus(provider, { persistent: true }).configured) {
-        throw new Error(`${value} is not an authenticated external model.`);
-      }
-      const current = readProviderSelection();
-      if (!current.includes(route.provider)) {
-        writeProviderSelection([...current, route.provider]);
-      }
-      const selectedProfiles = agentCatalog.readSelectedExternalAgentProfiles();
-      if (!selectedProfiles.includes(value)) {
-        agentCatalog.writeSelectedExternalAgentProfiles([...selectedProfiles, value]);
-      }
-    } catch (error) {
-      rollback(error);
-      throw error;
-    }
+  const { selectedConfiguredListedModels } = await import("./provider-selection.mjs");
+  if (!selectedConfiguredListedModels().some((model) => model.slug === value)) {
+    throw new Error(`${value} is not an enabled, authenticated external model.`);
   }
-
-  if (route) {
-    const catalog = spawnSync(
-      process.execPath,
-      [path.join(REPO_ROOT, "src", "catalog.mjs")],
-      {
-        cwd: REPO_ROOT,
-        env: { ...process.env, MODEL_ROUTER_TARGET: "codex" },
-        encoding: "utf8",
-      },
-    );
-    if (catalog.status !== 0) {
-      const error = new Error((catalog.stderr || "Codex model catalog could not be refreshed.").trim());
-      rollback(error);
-      throw error;
-    }
-  }
-
-  let configModel = value;
-  if (route && config?.login_free) {
-    const { nativeAliasFor } = await import("./native-alias.mjs");
-    configModel = nativeAliasFor(value) || value;
-  }
+  const { nativeAliasFor } = await import("./native-alias.mjs");
+  const configModel = nativeAliasFor(value) || value;
   const result = spawnSync(
     process.execPath,
-    [path.join(REPO_ROOT, "src", "config-manager.mjs"), "model-set", configModel],
+    [path.join(REPO_ROOT, "src", "config-manager.mjs"), "login-free-enable", configModel],
     {
       cwd: REPO_ROOT,
       env: { ...process.env, MODEL_ROUTER_TARGET: "codex" },
@@ -720,89 +391,9 @@ async function setCodexModel(slug, restart = false) {
     },
   );
   if (result.status !== 0) {
-    const error = new Error((result.stderr || "The Codex model could not be changed.").trim());
-    rollback(error);
-    throw error;
+    throw new Error((result.stderr || "The Codex model could not be changed.").trim());
   }
-
-  if (restart) {
-    try {
-      restartCodexApp();
-    } catch (error) {
-      rollback(error);
-      throw error;
-    }
-  }
-
-  let saved;
-  try {
-    saved = JSON.parse(result.stdout);
-  } catch (error) {
-    rollback(error);
-    throw new Error("The Codex model change returned invalid JSON.");
-  }
-  process.stdout.write(
-    `${JSON.stringify({
-      ...saved,
-      selectedModel: value,
-      restartRequired: !restart,
-      restarted: restart,
-      ...(route ? { subagentProfile: { selected: true, slug: value } } : {}),
-    })}\n`,
-  );
-}
-
-async function setExternalAgentProfile(slug, desired) {
-  const value = String(slug || "").trim();
-  if (!value || (desired !== "on" && desired !== "off")) {
-    throw new Error("Usage: control agent-profile-set <model-slug> <on|off>");
-  }
-  const { MODEL_BY_SLUG, PROVIDERS } = await import("./model-registry.mjs");
-  const { credentialStatus } = await import("./provider-credentials.mjs");
-  const agentCatalog = await import("./codex-agent-catalog.mjs");
-  const route = MODEL_BY_SLUG.get(value);
-  if (!route) throw new Error(`Unknown external model: ${value}`);
-  const provider = PROVIDERS.get(route.provider);
-  if (!credentialStatus(provider, { persistent: true }).configured) {
-    throw new Error(`${value} is not an authenticated external model.`);
-  }
-
-  const selectionSnapshot = snapshotFile(agentCatalog.EXTERNAL_AGENT_SELECTION_PATH);
-  const agentsSnapshot = snapshotManagedAgents();
-  const configSnapshot = snapshotFile(CONFIG_PATH);
-  const current = agentCatalog.readSelectedExternalAgentProfiles();
-  const next = desired === "on"
-    ? [...new Set([...current, value])]
-    : current.filter((profile) => profile !== value);
-  try {
-    const selectedProfiles = agentCatalog.writeSelectedExternalAgentProfiles(next);
-    const rebuilt = agentCatalog.rebuildExternalSubagentProfiles({
-      mergedCatalog: readMergedCatalog(),
-      selectedProfiles,
-    });
-    const { syncExternalAgentRegistrations } = await import("./codex-agent-registration.mjs");
-    syncExternalAgentRegistrations(rebuilt.externalProfiles);
-    process.stdout.write(`${JSON.stringify({
-      slug: value,
-      selected: desired === "on",
-      selectedProfiles,
-      profile: rebuilt.externalProfiles.find((profile) => profile.slug === value) || null,
-    })}\n`);
-  } catch (error) {
-    restoreFile(agentCatalog.EXTERNAL_AGENT_SELECTION_PATH, selectionSnapshot);
-    restoreManagedAgents(agentsSnapshot);
-    restoreFile(CONFIG_PATH, configSnapshot);
-    throw error;
-  }
-}
-
-async function setNextTaskModel(slug, { restart = false } = {}) {
-  return setCodexModel(slug, restart);
-}
-
-function runCodexRestart() {
-  restartCodexApp();
-  process.stdout.write(`${JSON.stringify({ restarted: true, restartRequired: false })}\n`);
+  process.stdout.write(result.stdout);
 }
 
 async function updateAndVerifyCodex() {
@@ -834,21 +425,16 @@ if (args.includes("--probe")) {
   if (!args[1]) throw new Error("Usage: control login <oauth-provider>");
   await loginProvider(args[1]);
 } else if (args[0] === "credential") {
-  if (!args[1]) throw new Error("Usage: control credential <api-provider>");
-  await saveProviderCredential(args[1]);
+  if (!args[1]) throw new Error("Usage: control credential <api-provider> [--remove]");
+  if (args.includes("--remove")) {
+    await deleteProviderCredential(args[1]);
+  } else {
+    await saveProviderCredential(args[1]);
+  }
 } else if (args[0] === "auth-mode") {
   await setLoginFreeMode(args[1]);
-} else if (args[0] === "model-catalog") {
-  if (!args.includes("--json")) {
-    throw new Error("Usage: control model-catalog --json");
-  }
-  process.stdout.write(`${JSON.stringify(modelCatalogSnapshot())}\n`);
 } else if (args[0] === "model-set") {
-  await setNextTaskModel(args[1], { restart: restartOption() });
-} else if (args[0] === "agent-profile-set") {
-  await setExternalAgentProfile(args[1], args[2]);
-} else if (args[0] === "codex-restart") {
-  runCodexRestart();
+  await setLoginFreeModel(args[1]);
 } else if (args[0] === "maintenance") {
   await updateAndVerifyCodex();
 } else {

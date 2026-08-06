@@ -45,7 +45,7 @@ function startForwarder(port, backendPort, authPath) {
     cwd: root,
     env: {
       ...process.env,
-      MODEL_ROUTER_TARGET: "cursor",
+      MODEL_ROUTER_TARGET: "codex",
       MODEL_ROUTER_INTERNAL_KEY: INTERNAL_KEY,
       MODEL_ROUTER_GROK_OAUTH_PORT: String(port),
       GROK_CLI_CHAT_PROXY_BASE_URL: `http://127.0.0.1:${backendPort}`,

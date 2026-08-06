@@ -52,40 +52,34 @@ function loadRegistry() {
       if (!provider.credential?.file || !Array.isArray(provider.credential.environment)) {
         fail(`provider ${provider.id} requires credential metadata`);
       }
-      if (provider.protocol !== undefined && !["openai", "anthropic"].includes(provider.protocol)) {
+      if (
+        provider.protocol !== undefined &&
+        !["openai", "anthropic", "openai-responses"].includes(provider.protocol)
+      ) {
         fail(`provider ${provider.id} has an unsupported API protocol`);
-      }
-      if (provider.modelDiscovery !== undefined) {
-        if (
-          !provider.modelDiscovery ||
-          typeof provider.modelDiscovery !== "object" ||
-          typeof provider.modelDiscovery.endpoint !== "string" ||
-          !provider.modelDiscovery.endpoint.startsWith("/")
-        ) {
-          fail(`provider ${provider.id} has invalid modelDiscovery metadata`);
-        }
-      }
-      if (provider.modelAllowPatterns !== undefined) {
-        if (
-          !Array.isArray(provider.modelAllowPatterns) ||
-          provider.modelAllowPatterns.length === 0 ||
-          provider.modelAllowPatterns.some((value) => typeof value !== "string" || !value)
-        ) {
-          fail(`provider ${provider.id} has invalid modelAllowPatterns`);
-        }
-        for (const value of provider.modelAllowPatterns) {
-          try {
-            new RegExp(value);
-          } catch {
-            fail(`provider ${provider.id} has invalid modelAllowPatterns`);
-          }
-        }
-      }
-      if (provider.pickerPolicy !== undefined && provider.pickerPolicy !== "hide-all") {
-        fail(`provider ${provider.id} has an unsupported pickerPolicy`);
       }
     }
     providers.set(provider.id, Object.freeze(provider));
+  }
+
+  // Protocol variants (e.g. opencode-go-messages) ride on another provider's
+  // credential and selection state, so the link must point at a real canonical
+  // provider whose stored key is actually the one the variant will send.
+  for (const provider of providers.values()) {
+    if (provider.variantOf === undefined) continue;
+    const parent = providers.get(provider.variantOf);
+    if (!parent) {
+      fail(`provider ${provider.id} is a variant of unknown provider ${provider.variantOf}`);
+    }
+    if (parent.variantOf !== undefined) {
+      fail(`provider ${provider.id} may not be a variant of variant ${parent.id}`);
+    }
+    if (provider.kind !== "openai-compatible" || parent.kind !== "openai-compatible") {
+      fail(`variant provider ${provider.id} and its parent must be openai-compatible`);
+    }
+    if (provider.credential?.file !== parent.credential?.file) {
+      fail(`variant provider ${provider.id} must share ${parent.id}'s credential file`);
+    }
   }
 
   const slugs = new Set();
@@ -98,10 +92,32 @@ function loadRegistry() {
     return Object.freeze(model);
   });
 
+  const modelBySlug = new Map(models.map((model) => [model.slug, model]));
+  for (const model of models) {
+    const problem = upgradeTargetProblem(model, modelBySlug);
+    if (problem) fail(problem);
+  }
+
   return {
     providers,
     models: Object.freeze(models),
   };
+}
+
+// Codex only renders the upgrade modal when the target slug is in the picker,
+// so a prompt pointing at a missing or unlisted model can never fire. Catch
+// that at load time instead of shipping a silent no-op. Targets may be
+// declared later in the file, so this runs after the whole set is known.
+function upgradeTargetProblem(model, modelBySlug) {
+  if (model.upgradeTo === undefined) return undefined;
+  const target = modelBySlug.get(model.upgradeTo.model);
+  if (!target) {
+    return `model ${model.slug} upgrades to unknown model ${model.upgradeTo.model}`;
+  }
+  if (!target.listed) {
+    return `model ${model.slug} upgrades to unlisted model ${model.upgradeTo.model}`;
+  }
+  return undefined;
 }
 
 // Returns a problem description instead of throwing so the strict registry
@@ -125,16 +141,45 @@ function modelProblem(model, providers, slugs, gatewayModels) {
     return `model ${model.slug} has an invalid requestProfile`;
   }
   if (
-    model.pickerVisibility !== undefined &&
-    !["list", "hide"].includes(model.pickerVisibility)
+    model.multiAgentVersion !== undefined &&
+    !["v1", "v2"].includes(model.multiAgentVersion)
   ) {
-    return `model ${model.slug} has an invalid pickerVisibility`;
+    return `model ${model.slug} has an invalid multiAgentVersion`;
   }
   if (
-    model.protocol !== undefined &&
-    !["openai", "anthropic", "responses"].includes(model.protocol)
+    model.supportsReasoningSummaries !== undefined &&
+    typeof model.supportsReasoningSummaries !== "boolean"
   ) {
-    return `model ${model.slug} has an unsupported API protocol`;
+    return `model ${model.slug} has an invalid supportsReasoningSummaries`;
+  }
+  if (
+    model.defaultReasoningSummary !== undefined &&
+    !["auto", "concise", "detailed"].includes(model.defaultReasoningSummary)
+  ) {
+    return `model ${model.slug} has an invalid defaultReasoningSummary`;
+  }
+  if (
+    model.availabilityNux !== undefined &&
+    (typeof model.availabilityNux !== "string" || !model.availabilityNux.trim())
+  ) {
+    return `model ${model.slug} has an invalid availabilityNux`;
+  }
+  // The markdown is the entire migration modal body, so an empty one would
+  // render a blank prompt; a self-target would loop the prompt forever.
+  if (model.upgradeTo !== undefined) {
+    const upgrade = model.upgradeTo;
+    if (
+      !upgrade ||
+      typeof upgrade !== "object" ||
+      Array.isArray(upgrade) ||
+      typeof upgrade.model !== "string" ||
+      !upgrade.model ||
+      upgrade.model === model.slug ||
+      typeof upgrade.markdown !== "string" ||
+      !upgrade.markdown.trim()
+    ) {
+      return `model ${model.slug} has an invalid upgradeTo`;
+    }
   }
   if (slugs.has(model.slug)) return `duplicate model slug ${model.slug}`;
   if (gatewayModels.has(model.gatewayModel)) {
@@ -194,6 +239,7 @@ function mergeUserModels(base) {
   const models = [...base.models];
   const slugs = new Set(models.map((model) => model.slug));
   const gatewayModels = new Set(models.map((model) => model.gatewayModel));
+  const userModels = new Set();
   for (const model of readUserModels()) {
     const problem = modelProblem(model, base.providers, slugs, gatewayModels);
     if (problem) {
@@ -202,16 +248,29 @@ function mergeUserModels(base) {
     }
     slugs.add(model.slug);
     gatewayModels.add(model.gatewayModel);
-    models.push(Object.freeze(model));
+    const frozen = Object.freeze(model);
+    userModels.add(frozen);
+    models.push(frozen);
   }
-  return { models: Object.freeze(models), warnings: Object.freeze(warnings) };
+  // Upgrade targets may point at models merged later in the overlay, so they
+  // resolve only after the whole set settles.
+  const modelBySlug = new Map(models.map((model) => [model.slug, model]));
+  const kept = models.filter((model) => {
+    if (!userModels.has(model)) return true;
+    const problem = upgradeTargetProblem(model, modelBySlug);
+    if (problem) {
+      warnings.push(`Skipped user model: ${problem}`);
+      return false;
+    }
+    return true;
+  });
+  return { models: Object.freeze(kept), warnings: Object.freeze(warnings) };
 }
 
 const registry = loadRegistry();
 const merged = mergeUserModels(registry);
 
 export const PROVIDERS = registry.providers;
-export const STATIC_MODELS = registry.models;
 export const MODELS = merged.models;
 export const USER_MODEL_WARNINGS = merged.warnings;
 export const LISTED_MODELS = Object.freeze(MODELS.filter((model) => model.listed));
@@ -225,56 +284,4 @@ export const MODEL_BY_GATEWAY_ID = new Map(
 
 export function providerForModel(model) {
   return PROVIDERS.get(model.provider);
-}
-
-export function protocolForModel(model) {
-  return model.protocol || providerForModel(model)?.protocol || "openai";
-}
-
-const EXTERNAL_AGENT_PROTOCOLS = new Set(["openai", "anthropic", "responses"]);
-
-function modelProviderId(model) {
-  const slug = String(model?.slug || "");
-  const slugProvider = slug.includes("/") ? slug.slice(0, slug.indexOf("/")) : "";
-  const provider = String(model?.provider || slugProvider).trim();
-  return provider && provider === slugProvider ? provider : undefined;
-}
-
-function validReasoning(model) {
-  const levels = model?.reasoningLevels || model?.supported_reasoning_levels;
-  if (!Array.isArray(levels) || levels.length === 0) return false;
-  if (levels.some((level) => !level || typeof level.effort !== "string" || !level.effort)) {
-    return false;
-  }
-  const effort = model.defaultEffort || model.default_reasoning_level;
-  return typeof effort === "string" && levels.some((level) => level.effort === effort);
-}
-
-// External agent generation is deliberately conservative. A model can be
-// listed in the catalog and still remain catalog-only when tool calls were
-// not explicitly verified elsewhere.
-export function isCompatibleExternalSubagent(model, profile = {}) {
-  const slug = String(model?.slug || "").trim();
-  const providerId = modelProviderId(model);
-  const provider = providerId ? PROVIDERS.get(providerId) : undefined;
-  if (!slug.includes("/") || model?.listed === false || !provider) return false;
-  const protocol = model.protocol || provider.protocol || "openai";
-  if (!EXTERNAL_AGENT_PROTOCOLS.has(protocol)) return false;
-  if (provider.protocol && model.protocol && provider.protocol !== model.protocol) return false;
-  const modalities = model.inputModalities || model.input_modalities;
-  if (!Array.isArray(modalities) || !modalities.includes("text")) return false;
-  if (modalities.some((modality) => !["text", "image"].includes(modality))) return false;
-  const contextWindow = model.contextWindow || model.context_window;
-  const autoCompact = model.autoCompact || model.auto_compact_token_limit;
-  if (!Number.isInteger(contextWindow) || contextWindow < 1) return false;
-  if (autoCompact !== undefined &&
-      (!Number.isInteger(autoCompact) || autoCompact < 1 || autoCompact > contextWindow)) {
-    return false;
-  }
-  if (!validReasoning(model)) return false;
-  const profileProvider = profile.model_provider || profile.modelProvider;
-  const profileModel = profile.model || profile.slug;
-  if (profileProvider !== undefined && profileProvider !== "codex-router") return false;
-  if (profileModel !== undefined && profileModel !== slug) return false;
-  return true;
 }

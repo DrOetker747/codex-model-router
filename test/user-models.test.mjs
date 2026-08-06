@@ -35,6 +35,51 @@ test("userModelEntry fills conservative picker metadata", () => {
   assert.ok(entry.description.length > 0);
 });
 
+test("curation metadata can set sizing and the effort ladder", () => {
+  const entry = userModelEntry({
+    providerId: "deepseek",
+    upstreamId: "deepseek-effort-test",
+    priority: 100,
+    metadata: {
+      contextWindow: 262144,
+      autoCompact: 222822,
+      inputModalities: ["text", "image"],
+      reasoningLevels: [
+        { effort: "low", description: "Quick reasoning" },
+        { effort: "medium", description: "Balanced reasoning" },
+        { effort: "high", description: "Deep reasoning" },
+      ],
+      defaultEffort: "medium",
+    },
+  });
+  assert.equal(entry.contextWindow, 262144);
+  assert.deepEqual(entry.inputModalities, ["text", "image"]);
+  assert.equal(entry.reasoningLevels.length, 3);
+  assert.equal(entry.defaultEffort, "medium");
+});
+
+test("curation metadata cannot replace identity or routing fields", () => {
+  const entry = userModelEntry({
+    providerId: "deepseek",
+    upstreamId: "deepseek-guard-test",
+    priority: 100,
+    metadata: {
+      slug: "evil/override",
+      gatewayModel: "evil-gateway",
+      upstreamModel: "evil-upstream",
+      provider: "evil",
+      requestProfile: "evil-profile",
+      contextWindow: 200000,
+    },
+  });
+  assert.equal(entry.slug, "deepseek/deepseek-guard-test");
+  assert.equal(entry.gatewayModel, "deepseek-deepseek-guard-test");
+  assert.equal(entry.upstreamModel, "deepseek-guard-test");
+  assert.equal(entry.provider, "deepseek");
+  assert.equal(entry.requestProfile, undefined);
+  assert.equal(entry.contextWindow, 200000);
+});
+
 test("userModelEntry omits requestProfile when the provider has none", () => {
   const entry = userModelEntry({
     providerId: "zai-coding",
@@ -42,20 +87,6 @@ test("userModelEntry omits requestProfile when the provider has none", () => {
     priority: 100,
   });
   assert.equal(entry.requestProfile, undefined);
-});
-
-test("userModelEntry records catalog provenance when supplied", () => {
-  const entry = userModelEntry({
-    providerId: "opencode-go",
-    upstreamId: "qwen3.8-max",
-    priority: 100,
-    catalogState: "unavailable",
-    catalogFetchedAt: "2026-08-03T10:00:00.000Z",
-    catalogAgeMs: 60_000,
-  });
-  assert.equal(entry.catalogState, "unavailable");
-  assert.equal(entry.catalogFetchedAt, "2026-08-03T10:00:00.000Z");
-  assert.equal(entry.catalogAgeMs, 60_000);
 });
 
 test("user models round-trip through the protected state file", () => {
@@ -74,11 +105,32 @@ test("readUserModels returns an empty list when the file is absent or invalid", 
 
 test("registry merges valid user models and skips collisions", async () => {
   const entries = [
-    userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-user-test", priority: 100 }),
+    userModelEntry({
+      providerId: "deepseek",
+      upstreamId: "deepseek-user-test",
+      priority: 100,
+      metadata: { availabilityNux: "Now available through your DeepSeek key." },
+    }),
     // Collides with a built-in slug and must be skipped, not fatal.
     { ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-v4-pro", priority: 101 }) },
     // Unknown provider must be skipped, not fatal.
     userModelEntry({ providerId: "no-such-provider", upstreamId: "x-model", priority: 102 }),
+    // Announcement copy must be a non-empty string; a blank one is skipped.
+    {
+      ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-blank-nux", priority: 103 }),
+      availabilityNux: "   ",
+    },
+    // An upgrade prompt pointing at a slug the merged registry does not carry
+    // can never render, so the entry is skipped.
+    {
+      ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-bad-upgrade", priority: 104 }),
+      upgradeTo: { model: "no-such/model", markdown: "Switch now" },
+    },
+    // A prompt targeting a listed checked-in model is kept.
+    {
+      ...userModelEntry({ providerId: "deepseek", upstreamId: "deepseek-good-upgrade", priority: 105 }),
+      upgradeTo: { model: "deepseek/deepseek-v4-pro", markdown: "V4 Pro supersedes this preview." },
+    },
   ];
   writeUserModels(entries);
   const registry = await import("../src/model-registry.mjs");
@@ -86,8 +138,15 @@ test("registry merges valid user models and skips collisions", async () => {
   assert.ok(slugs.includes("deepseek/deepseek-user-test"));
   assert.equal(slugs.filter((slug) => slug === "deepseek/deepseek-v4-pro").length, 1);
   assert.ok(!slugs.includes("no-such-provider/x-model"));
+  assert.ok(!slugs.includes("deepseek/deepseek-blank-nux"));
+  assert.ok(!slugs.includes("deepseek/deepseek-bad-upgrade"));
+  assert.deepEqual(
+    registry.MODEL_BY_SLUG.get("deepseek/deepseek-good-upgrade").upgradeTo,
+    { model: "deepseek/deepseek-v4-pro", markdown: "V4 Pro supersedes this preview." },
+  );
   assert.ok(registry.MODEL_BY_GATEWAY_ID.has("deepseek-deepseek-user-test"));
-  assert.ok(registry.USER_MODEL_WARNINGS.length >= 2);
+  assert.ok(registry.USER_MODEL_WARNINGS.length >= 4);
   const merged = registry.MODEL_BY_SLUG.get("deepseek/deepseek-user-test");
   assert.equal(merged.listed, true);
+  assert.equal(merged.availabilityNux, "Now available through your DeepSeek key.");
 });

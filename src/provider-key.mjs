@@ -5,11 +5,12 @@ import {
   apiProvider,
   credentialStatus,
   primaryCredentialPath,
-  removeProviderCredential,
-  writeProviderCredential,
-  writeProviderFallbackCredential,
+  removeProviderCredentialSlot,
+  resolveProviderCredentialSlots,
+  writeProviderCredentialSlot,
 } from "./provider-credentials.mjs";
-import { disableProvider, enableProvider } from "./provider-selection.mjs";
+import { removeApiCredential } from "./provider-onboarding.mjs";
+import { enableProvider } from "./provider-selection.mjs";
 import { secretEntryFeedback, secretEntryProblem } from "./secret-entry.mjs";
 import {
   refreshTargetPickerIfInstalled,
@@ -18,9 +19,16 @@ import {
 
 const providerId = process.argv[2];
 const command = process.argv[3] || "status";
+const slotArgIndex = process.argv.indexOf("--slot");
+const slotNumber = slotArgIndex === -1 ? 0 : Number(process.argv[slotArgIndex + 1]);
+const slotIndex = Number.isInteger(slotNumber) && slotNumber > 0 ? slotNumber - 1 : 0;
 
-if (!providerId || !new Set(["status", "set", "set-backup", "remove"]).has(command)) {
-  console.error("Usage: provider-key.mjs PROVIDER status|set|set-backup|remove");
+if (
+  !providerId ||
+  !new Set(["status", "set", "remove"]).has(command) ||
+  (process.argv.includes("--slot") && slotIndex < 0)
+) {
+  console.error("Usage: provider-key.mjs PROVIDER status|set|remove [--slot 1..5]");
   process.exit(2);
 }
 
@@ -201,33 +209,45 @@ if (command === "status") {
         }\n`
       : `${provider.displayName} key is not configured.\n`,
   );
+  const slots = resolveProviderCredentialSlots(provider);
+  if (slots.length > 1) {
+    process.stdout.write(
+      `Key slots configured: ${slots.length} (${slots
+        .map((entry) => `slot ${entry.slot + 1}`)
+        .join(", ")}). On quota exhaustion the router rotates to the next slot.\n`,
+    );
+  }
   if (!status.configured) process.exitCode = 1;
-} else if (command === "set" || command === "set-backup") {
-  const backup = command === "set-backup";
-  const value = promptForKey(
-    backup
-      ? `${provider.displayName} backup API key`
-      : provider.credential.prompt || `${provider.displayName} API key`,
-  );
-  const target = backup
-    ? writeProviderFallbackCredential(provider, value)
-    : writeProviderCredential(provider, value);
+} else if (command === "set") {
+  const value = promptForKey(provider.credential.prompt || `${provider.displayName} API key`);
+  const target = writeProviderCredentialSlot(provider, value, slotIndex);
   enableProvider(provider.id);
   const refreshed = refreshTargetPickerIfInstalled();
   process.stdout.write(
-    `${provider.displayName} ${backup ? "backup " : ""}key saved to protected local storage at ${target}. The provider is enabled.${
+    `${provider.displayName} key saved to protected local storage at ${target}. The provider is enabled.${
       refreshed ? ` Fully quit and reopen ${targetPickerName()} to refresh the model picker.` : ""
     }\n`,
   );
-} else {
-  const removedCount = removeProviderCredential(provider);
-  if (removedCount) disableProvider(provider.id);
-  const refreshed = removedCount ? refreshTargetPickerIfInstalled() : false;
+} else if (slotIndex > 0) {
+  const removed = removeProviderCredentialSlot(provider, slotIndex);
   process.stdout.write(
-    removedCount
-      ? `Removed ${removedCount} managed ${provider.displayName} key file${removedCount === 1 ? "" : "s"} and disabled the provider.${
+    removed
+      ? `Removed slot ${slotNumber} of the ${provider.displayName} key set.\n`
+      : `No ${provider.displayName} key exists in slot ${slotNumber}.\n`,
+  );
+} else {
+  const removal = removeApiCredential(provider.id);
+  const refreshed = removal.removedFiles ? refreshTargetPickerIfInstalled() : false;
+  process.stdout.write(
+    removal.removedFiles
+      ? `Removed ${removal.removedFiles} managed ${provider.displayName} key file${removal.removedFiles === 1 ? "" : "s"} and disabled the provider.${
           refreshed ? ` Fully quit and reopen ${targetPickerName()} to refresh the model picker.` : ""
         }\n`
       : `No managed ${provider.displayName} key file exists.\n`,
   );
+  if (removal.stillConfigured) {
+    process.stdout.write(
+      `A ${provider.displayName} key is still available from ${removal.remainingSource}; remove it there to fully disconnect.\n`,
+    );
+  }
 }

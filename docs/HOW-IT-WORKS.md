@@ -1,8 +1,7 @@
 # How Codex Router works
 
-The provider core has two isolated app frontends. Codex uses the Responses API
-and a merged native catalog; the experimental Cursor target uses an
-OpenAI-compatible Chat Completions gateway configured manually in Cursor.
+The provider core has one app frontend: Codex uses the Responses API and a
+merged native catalog.
 
 ## Why a router is needed
 
@@ -177,3 +176,13 @@ They are never sent to an external model provider.
 
 Commands, permissions, MCP tools, skills, and task state remain in Codex. Only
 model inference and external-model compaction are routed.
+
+Codex collaboration messages can place a delegated subagent task in native
+OpenAI `encrypted_content`. External providers cannot read that opaque item. For
+routed subagents only, the router uses the already-authenticated native Codex
+backend to relay the exact task payload through a constrained function call,
+replaces the opaque item with plaintext, and then sends the task to the selected
+external model. Ordinary routed prompts do not use this relay.
+The relay requires an active ChatGPT sign-in because only the native Codex
+backend can open its own opaque payload. In login-free mode the router fails
+closed instead of forwarding unreadable ciphertext to an external provider.

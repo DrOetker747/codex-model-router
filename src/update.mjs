@@ -1,12 +1,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readInstallManifest } from "./install-manifest.mjs";
 import { SOURCE_ROOT, TARGET } from "./paths.mjs";
-
-export const CATALOG_SYNC_UPDATE_BUDGET_MS = 2_000;
 
 function git(args, options = {}) {
   const output = execFileSync("git", ["-C", SOURCE_ROOT, ...args], {
@@ -57,11 +56,6 @@ export function currentCheckoutInstaller(platform = process.platform, target = T
     : { command: path.join(SOURCE_ROOT, "bin", "install"), args: [] };
 }
 
-export function updateStrategy(aheadBy, behindBy) {
-  if (behindBy <= 0) return "current";
-  return aheadBy > 0 ? "rebase" : "fast-forward";
-}
-
 function installCurrentCheckout() {
   const installer = currentCheckoutInstaller();
   const result = spawnSync(installer.command, installer.args, {
@@ -75,24 +69,52 @@ function installCurrentCheckout() {
   }
 }
 
-export function syncAutoModels({ spawn: spawnCommand = spawnSync, timeoutMs = CATALOG_SYNC_UPDATE_BUDGET_MS } = {}) {
-  const result = spawnCommand(process.execPath, [
-    path.join(SOURCE_ROOT, "src", "sync-auto-models.mjs"),
-  ], {
-    cwd: SOURCE_ROOT,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "inherit"],
-    env: { ...process.env, MODEL_ROUTER_TARGET: TARGET },
-    timeout: timeoutMs,
-    killSignal: "SIGTERM",
-  });
-  if (result.error || result.status !== 0) return false;
+function registeredTrayBundlePath() {
   try {
-    const payload = JSON.parse(result.stdout || "{}");
-    const results = payload.results || payload.providers || [];
-    return results.some((entry) => entry.changed);
+    const value = execFileSync(
+      "defaults",
+      [
+        "read",
+        "io.github.codex-router.tray",
+        "ModelRouterTray.loginItemBundlePath",
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+    return value || undefined;
   } catch {
-    return false;
+    return undefined;
+  }
+}
+
+export function trayRefreshRequired({
+  platform = process.platform,
+  home = os.homedir(),
+  sourceRoot = SOURCE_ROOT,
+  registeredPath,
+} = {}) {
+  if (platform !== "darwin") return false;
+  const registered = registeredPath ?? registeredTrayBundlePath();
+  const candidates = [
+    path.join(sourceRoot, "dist", "Model Router.app"),
+    path.join(home, "Applications", "Model Router.app"),
+  ];
+  return (
+    candidates.some((candidate) => existsSync(candidate)) ||
+    Boolean(registered && existsSync(registered))
+  );
+}
+
+// The tray is rebuilt from the same checkout that owns the router, so an
+// update never leaves a stale companion binary behind. Best-effort: the router
+// update itself succeeded, and a failed tray refresh must not roll it back.
+function refreshTrayCompanion() {
+  if (!trayRefreshRequired()) return;
+  const launcher = path.join(SOURCE_ROOT, "bin", "model-router-tray");
+  const result = spawnSync(launcher, [], { cwd: SOURCE_ROOT, stdio: "inherit" });
+  if (result.error) {
+    process.stderr.write(`Menu-bar companion refresh did not finish: ${result.error.message}\n`);
+  } else if (result.status !== 0) {
+    process.stderr.write(`Menu-bar companion refresh exited with status ${result.status}.\n`);
   }
 }
 
@@ -115,17 +137,7 @@ export function checkForUpdate() {
   git(["fetch", "--quiet", "origin", "main"]);
   const current = git(["rev-parse", "HEAD"]);
   const available = git(["rev-parse", "origin/main"]);
-  const aheadBy = Number(git(["rev-list", "--count", "origin/main..HEAD"]));
-  const behindBy = Number(git(["rev-list", "--count", "HEAD..origin/main"]));
-  const strategy = updateStrategy(aheadBy, behindBy);
-  return {
-    current,
-    available,
-    aheadBy,
-    behindBy,
-    strategy,
-    updateAvailable: strategy !== "current",
-  };
+  return { current, available, updateAvailable: current !== available };
 }
 
 export function installationNeedsRefresh(manifest, revision) {
@@ -135,12 +147,12 @@ export function installationNeedsRefresh(manifest, revision) {
 export function updateCheckout() {
   const status = checkForUpdate();
   if (!status.updateAvailable) {
-    const modelsSynced = syncAutoModels();
-    if (!installationNeedsRefresh(readInstallManifest(), status.current) && !modelsSynced) {
-      return { ...status, updated: false, reinstalled: false, modelsSynced };
+    if (!installationNeedsRefresh(readInstallManifest(), status.current)) {
+      return { ...status, updated: false, reinstalled: false };
     }
     installCurrentCheckout();
-    return { ...status, updated: false, reinstalled: true, modelsSynced };
+    refreshTrayCompanion();
+    return { ...status, updated: false, reinstalled: true };
   }
   let branch = git(["branch", "--show-current"]);
   if (!branch) {
@@ -151,26 +163,10 @@ export function updateCheckout() {
     throw new Error("Updates require the managed checkout to be on its main branch.");
   }
   git(["update-ref", "refs/codex-router/rollback", status.current]);
-  if (status.strategy === "rebase") {
-    try {
-      git(["rebase", status.available], { inherit: true });
-    } catch (error) {
-      try {
-        git(["rebase", "--abort"], { inherit: true });
-      } catch {
-        // Git reports the original conflict below; the clean-checkout guard
-        // prevents an unrelated worktree from reaching this path.
-      }
-      throw new Error(
-        "Update conflicts with the local provider extension; the previous source remains active.",
-        { cause: error },
-      );
-    }
-  } else {
-    git(["merge", "--ff-only", status.available], { inherit: true });
-  }
+  git(["merge", "--ff-only", status.available], { inherit: true });
   try {
     installCurrentCheckout();
+    refreshTrayCompanion();
   } catch (error) {
     try {
       restoreRevision(status.current);
@@ -218,20 +214,25 @@ export function rollbackCheckout() {
   return { rolledBack: true, from: current, to: target };
 }
 
+const COMMANDS = {
+  check: checkForUpdate,
+  update: updateCheckout,
+  rollback: rollbackCheckout,
+};
+
+// `check` must stay read-only: the tray and the CLI both use it to answer "is
+// an update available?" without touching the installation.
+export function resolveCommand(args) {
+  return COMMANDS[args[0] || "update"];
+}
+
 async function main() {
-  const command = process.argv[2] || "update";
-  const result = command === "check"
-    ? checkForUpdate()
-    : command === "update"
-      ? updateCheckout()
-      : command === "rollback"
-        ? rollbackCheckout()
-        : undefined;
-  if (!result) {
+  const command = resolveCommand(process.argv.slice(2));
+  if (!command) {
     console.error("Usage: update.mjs check|update|rollback");
     process.exit(2);
   }
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify(command(), null, 2)}\n`);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

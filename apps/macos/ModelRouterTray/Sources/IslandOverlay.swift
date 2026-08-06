@@ -271,11 +271,11 @@ private struct IslandOverlayView: View {
         .frame(maxWidth: .infinity)
         .layoutPriority(1)
       if !store.activeRequests.isEmpty {
-        Label("\(activeAgentCount)", systemImage: "person.2.fill")
+        Label("\(activeSessions.count)", systemImage: "bubble.left.and.bubble.right.fill")
           .font(.system(size: 9.5, weight: .semibold, design: .rounded))
           .foregroundStyle(.white.opacity(0.72))
           .fixedSize()
-          .help("\(activeAgentCount) active \(activeAgentCount == 1 ? "agent" : "agents")")
+          .help("\(activeSessions.count) running \(activeSessions.count == 1 ? "chat" : "chats")")
       }
       if store.activeRequests.isEmpty {
         Text(compactUsageSummary)
@@ -312,7 +312,7 @@ private struct IslandOverlayView: View {
   private var usagePeekContent: some View {
     VStack(spacing: 9) {
       HStack(spacing: 9) {
-        LiveOrb(state: store.activityState, count: store.activeRequestCount)
+        LiveOrb(state: store.activityState, count: store.activeChatCount)
         VStack(alignment: .leading, spacing: 1) {
           Text(store.activityState.label)
             .font(.system(size: 12, weight: .semibold, design: .rounded))
@@ -348,7 +348,7 @@ private struct IslandOverlayView: View {
           Text(store.activityState.label)
             .font(.system(size: 12, weight: .semibold, design: .rounded))
             .foregroundStyle(store.activityState.tint)
-          Text("\(activeSessions.count) \(activeSessions.count == 1 ? "SESSION" : "SESSIONS") • \(activeAgentCount) \(activeAgentCount == 1 ? "AGENT" : "AGENTS")")
+          Text("\(activeSessions.count) \(activeSessions.count == 1 ? "CHAT" : "CHATS") RUNNING")
             .font(.system(size: 8, weight: .semibold, design: .monospaced))
             .foregroundStyle(routerMuted)
         }
@@ -398,7 +398,7 @@ private struct IslandOverlayView: View {
   private var usageExpandedContent: some View {
     VStack(spacing: 13) {
       HStack(spacing: 10) {
-        LiveOrb(state: store.activityState, count: store.activeRequestCount)
+        LiveOrb(state: store.activityState, count: store.activeChatCount)
         VStack(alignment: .leading, spacing: 2) {
           Text(peekTitle)
             .font(.system(size: 15, weight: .semibold, design: .rounded))
@@ -451,7 +451,7 @@ private struct IslandOverlayView: View {
           .foregroundStyle(routerMuted)
         Spacer()
         Text(store.hasConcurrentActivity
-          ? "\(store.activeRequestCount) concurrent model requests"
+          ? "\(store.activeChatCount) chats running"
           : "Account and traffic are provider-scoped")
           .font(.system(size: 9, design: .rounded))
           .foregroundStyle(routerMuted)
@@ -495,13 +495,13 @@ private struct IslandOverlayView: View {
           .buttonStyle(.plain)
           .foregroundStyle(routerMuted)
         }
-        LiveOrb(state: store.activityState, count: activeAgentCount)
+        LiveOrb(state: store.activityState, count: activeSessions.count)
         VStack(alignment: .leading, spacing: 2) {
-          Text(selectedSession?.name ?? "Active sessions")
+          Text(selectedSession?.name ?? "Running chats")
             .font(.system(size: 15, weight: .semibold, design: .rounded))
             .lineLimit(1)
           Text(selectedSession == nil
-            ? "\(activeSessions.count) running • \(activeAgentCount) active agents"
+            ? "\(activeSessions.count) \(activeSessions.count == 1 ? "chat" : "chats") running"
             : "\(selectedSession?.agents.count ?? 0) assigned agents")
             .font(.system(size: 9, weight: .medium, design: .rounded))
             .foregroundStyle(store.activityState.tint)
@@ -546,7 +546,7 @@ private struct IslandOverlayView: View {
 
   private var glow: some View {
     StatusGlow(state: store.activityState)
-      .id("\(store.activityState.rawValue)-\(store.activeRequestCount)")
+      .id("\(store.activityState.rawValue)-\(store.activeChatCount)")
   }
 
   private var peekTitle: String {
@@ -577,10 +577,6 @@ private struct IslandOverlayView: View {
       return IslandActivitySession(id: id, name: name, requests: requests)
     }
     .sorted { $0.latestStartedAt > $1.latestStartedAt }
-  }
-
-  private var activeAgentCount: Int {
-    activeSessions.reduce(0) { $0 + $1.agents.count }
   }
 
   private var selectedSession: IslandActivitySession? {
@@ -1344,27 +1340,14 @@ private struct LiveOrb: View {
       pulsing = false
       rippling = false
     }
-    guard !reduceMotion else { return }
+    // ThinkingOrbView owns animation for idle, generating, and error. These
+    // state values only affect the fallback status-dot branch used at startup.
+    guard !reduceMotion, state == .starting else { return }
 
-    if state == .error {
-      effectTask = Task { @MainActor in
-        withAnimation(.easeOut(duration: 0.28)) {
-          pulsing = true
-          rippling = true
-        }
-        try? await Task.sleep(nanoseconds: 520_000_000)
-        guard !Task.isCancelled else { return }
-        withAnimation(.easeInOut(duration: 0.32)) { pulsing = false }
-      }
-      return
-    }
-
-    let pulseDuration = state == .idle ? 2.6 : 1.35
-    withAnimation(.easeInOut(duration: pulseDuration).repeatForever(autoreverses: true)) {
+    withAnimation(.easeInOut(duration: 1.35).repeatForever(autoreverses: true)) {
       pulsing = true
     }
-    let rippleDuration = state == .idle ? 3.2 : 1.9
-    withAnimation(.easeOut(duration: rippleDuration).repeatForever(autoreverses: false)) {
+    withAnimation(.easeOut(duration: 1.9).repeatForever(autoreverses: false)) {
       rippling = true
     }
   }
@@ -1622,7 +1605,7 @@ private struct DesktopPanelView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 11) {
       HStack(spacing: 10) {
-        LiveOrb(state: store.activityState, count: store.activeRequestCount)
+        LiveOrb(state: store.activityState, count: store.activeChatCount)
         VStack(alignment: .leading, spacing: 2) {
           Text(store.activityState.label)
             .font(.system(size: 14, weight: .semibold, design: .rounded))

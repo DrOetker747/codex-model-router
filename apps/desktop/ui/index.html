@@ -131,6 +131,26 @@
           </div>
         </form>
       </dialog>
+
+      <dialog id="remove-dialog" class="key-dialog">
+        <form id="remove-form" method="dialog">
+          <div class="dialog-heading">
+            <div>
+              <p class="eyebrow">Remove connection</p>
+              <h2 id="remove-dialog-title">Remove API key</h2>
+            </div>
+            <button id="close-remove-dialog" class="icon-button" type="button" aria-label="Close">×</button>
+          </div>
+          <p id="remove-dialog-body">
+            The stored key is deleted from this Mac and the provider is hidden from Codex. You can add a
+            new key at any time.
+          </p>
+          <div class="dialog-actions">
+            <button id="cancel-remove" class="button secondary" type="button">Cancel</button>
+            <button class="button danger" type="submit">Remove key</button>
+          </div>
+        </form>
+      </dialog>
     </main>
 
     <main id="island" class="island" data-state="idle" hidden>

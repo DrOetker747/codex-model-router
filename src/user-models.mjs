@@ -6,13 +6,30 @@ import { STATE_DIR } from "./paths.mjs";
 
 // User-curated models live outside config/providers.json so a checkout update
 // never discards them. Entries carry the same shape as registry models;
-// metadata uses conservative defaults the user can edit in place.
+// metadata uses conservative defaults the user can adjust at curation time
+// (bin/curate-models asks for context, modalities, and reasoning efforts) or
+// edit in place afterwards. The stored values are plain local state the user
+// owns.
 
 export const USER_MODELS_PATH =
   process.env.MODEL_ROUTER_USER_MODELS || path.join(STATE_DIR, "user-models.json");
 
 const DEFAULT_CONTEXT_WINDOW = 131072;
 const DEFAULT_AUTO_COMPACT = 110000;
+
+// Curation may adjust presentation, sizing, and effort metadata only;
+// identity and routing fields always come from the provider id and the
+// discovered model id.
+const METADATA_FIELDS = new Set([
+  "description",
+  "contextWindow",
+  "autoCompact",
+  "inputModalities",
+  "reasoningLevels",
+  "defaultEffort",
+  "availabilityNux",
+  "upgradeTo",
+]);
 
 function gatewaySafe(value) {
   return String(value)
@@ -22,20 +39,7 @@ function gatewaySafe(value) {
     .replace(/^-|-$/g, "");
 }
 
-export function userModelEntry({
-  providerId,
-  upstreamId,
-  requestProfile,
-  priority,
-  protocol,
-  displayName,
-  description,
-  autoDiscovered,
-  pickerVisibility,
-  catalogState,
-  catalogFetchedAt,
-  catalogAgeMs,
-}) {
+export function userModelEntry({ providerId, upstreamId, requestProfile, priority, metadata }) {
   const gatewayModel = `${gatewaySafe(providerId)}-${gatewaySafe(upstreamId)}`;
   const entry = {
     slug: `${providerId}/${upstreamId}`,
@@ -43,10 +47,8 @@ export function userModelEntry({
     upstreamModel: upstreamId,
     provider: providerId,
     listed: true,
-    displayName: displayName || `${upstreamId} (curated)`,
-    description:
-      description ||
-      `User-curated ${providerId} model; conservative default metadata that can be edited in the user model file.`,
+    displayName: `${upstreamId} (curated)`,
+    description: `User-curated ${providerId} model; conservative default metadata that can be edited in the user model file.`,
     priority,
     defaultEffort: "high",
     reasoningLevels: [{ effort: "high", description: "Adaptive reasoning" }],
@@ -55,13 +57,10 @@ export function userModelEntry({
     inputModalities: ["text"],
     compHash: `${gatewayModel}-user-v1`,
   };
+  for (const [key, value] of Object.entries(metadata || {})) {
+    if (METADATA_FIELDS.has(key)) entry[key] = value;
+  }
   if (requestProfile) entry.requestProfile = requestProfile;
-  if (protocol) entry.protocol = protocol;
-  if (autoDiscovered) entry.autoDiscovered = autoDiscovered;
-  if (pickerVisibility) entry.pickerVisibility = pickerVisibility;
-  if (catalogState) entry.catalogState = catalogState;
-  if (catalogFetchedAt) entry.catalogFetchedAt = catalogFetchedAt;
-  if (Number.isFinite(catalogAgeMs)) entry.catalogAgeMs = catalogAgeMs;
   return entry;
 }
 

@@ -1,6 +1,9 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { readInstallManifest } from "./install-manifest.mjs";
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -18,8 +21,19 @@ function parseDoctorReport(output) {
   }
 }
 
+// The tray can be built from a different checkout than the one that owns the
+// installed router (for example a login item left behind by an old bundle on a
+// removable volume). Maintenance must update the recorded owner, otherwise
+// Update & Verify refreshes the wrong checkout and the stable install stays on
+// its old revision.
+export function maintenanceSourceRoot(repoRoot, manifest = readInstallManifest()) {
+  const owner = manifest?.current?.sourceRoot;
+  if (owner && existsSync(path.join(owner, ".git"))) return owner;
+  return repoRoot;
+}
+
 export function runCodexMaintenance({
-  sourceRoot = SOURCE_ROOT,
+  sourceRoot = maintenanceSourceRoot(SOURCE_ROOT),
   runner = spawnSync,
   executable = process.execPath,
   environment = process.env,

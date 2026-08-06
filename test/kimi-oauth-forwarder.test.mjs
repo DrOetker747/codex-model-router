@@ -36,7 +36,7 @@ test("Kimi OAuth forwarder returns an actionable 401 when login is required", as
     cwd: root,
     env: {
       ...process.env,
-      MODEL_ROUTER_TARGET: "cursor",
+      MODEL_ROUTER_TARGET: "codex",
       MODEL_ROUTER_INTERNAL_KEY: internalKey,
       MODEL_ROUTER_OAUTH_PORT: String(port),
       KIMI_CODE_HOME: home,

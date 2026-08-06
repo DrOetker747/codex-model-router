@@ -102,11 +102,11 @@ function waitForExit(child, label) {
   });
 }
 
-async function waitForHealth(url, headers = {}, timeoutMs = 30_000, expectedService, child) {
+async function waitForHealth(label, url, headers = {}, timeoutMs = 30_000, expectedService, child) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (child && (child.exitCode !== null || child.signalCode !== null)) {
-      throw new Error(`Service exited before becoming healthy at ${url}`);
+      throw new Error(`${label} exited before becoming healthy.`);
     }
     if (shuttingDown) throw new Error("Service startup was interrupted.");
     try {
@@ -124,7 +124,7 @@ async function waitForHealth(url, headers = {}, timeoutMs = 30_000, expectedServ
     }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  throw new Error(`Timed out waiting for ${url}`);
+  throw new Error(`Timed out waiting for ${label} to become healthy.`);
 }
 
 function stopChildren() {
@@ -140,27 +140,24 @@ function stopChildren() {
   }, 3_000).unref();
 }
 
-const FRONTENDS = {
-  codex: { script: "router.mjs", service: "codex-router", label: "Codex router" },
-  cursor: { script: "cursor-router.mjs", service: "cursor-router", label: "Cursor router" },
-};
+const FRONTEND = { script: "router.mjs", service: "codex-router", label: "Codex router" };
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, stopChildren);
 
 async function main() {
-  const oauth = run(process.execPath, [path.join(SOURCE_ROOT, "src", "oauth-forwarder.mjs")]);
-  await waitForHealth(loopback(PORTS.oauth, "/health"), {
+  const kimiForwarder = run(process.execPath, [path.join(SOURCE_ROOT, "src", "oauth-forwarder.mjs")]);
+  await waitForHealth("OAuth forwarder", loopback(PORTS.oauth, "/health"), {
     Authorization: `Bearer ${internalKey}`,
-  }, 30_000, undefined, oauth);
+  }, 30_000, undefined, kimiForwarder);
 
   const api = run(process.execPath, [path.join(SOURCE_ROOT, "src", "api-forwarder.mjs")]);
-  await waitForHealth(loopback(PORTS.api, "/health"), {
+  await waitForHealth("API forwarder", loopback(PORTS.api, "/health"), {
     Authorization: `Bearer ${internalKey}`,
   }, 30_000, undefined, api);
 
-  const grokOauth = run(process.execPath, [path.join(SOURCE_ROOT, "src", "grok-oauth-forwarder.mjs")]);
-  await waitForHealth(loopback(PORTS.grokOauth, "/health"), {
+  const grokForwarder = run(process.execPath, [path.join(SOURCE_ROOT, "src", "grok-oauth-forwarder.mjs")]);
+  await waitForHealth("Grok OAuth forwarder", loopback(PORTS.grokOauth, "/health"), {
     Authorization: `Bearer ${internalKey}`,
-  }, 30_000, undefined, grokOauth);
+  }, 30_000, undefined, grokForwarder);
 
   const gateway = run(litellm, [
     "--config",
@@ -174,6 +171,7 @@ async function main() {
   // system load; killing it mid-import restarts the import from scratch and
   // the service loops forever, so wait long enough for a starved import.
   await waitForHealth(
+    "LiteLLM gateway",
     loopback(PORTS.gateway, "/health/liveliness"),
     { Authorization: `Bearer ${internalKey}` },
     300_000,
@@ -181,10 +179,11 @@ async function main() {
     gateway,
   );
 
-  const frontend = FRONTENDS[TARGET];
+  const frontend = FRONTEND;
   const frontendService = frontend.service;
   const router = run(process.execPath, [path.join(SOURCE_ROOT, "src", frontend.script)]);
   await waitForHealth(
+    frontend.label,
     loopback(PORTS.router, "/health"),
     {},
     30_000,
@@ -194,9 +193,9 @@ async function main() {
 
   console.error(`[${frontendService}] ready (authenticated loopback endpoint)`);
   const result = await Promise.race([
-    waitForExit(oauth, "OAuth forwarder"),
+    waitForExit(kimiForwarder, "OAuth forwarder"),
     waitForExit(api, "API forwarder"),
-    waitForExit(grokOauth, "Grok OAuth forwarder"),
+    waitForExit(grokForwarder, "Grok OAuth forwarder"),
     waitForExit(gateway, "LiteLLM gateway"),
     waitForExit(router, frontend.label),
   ]);

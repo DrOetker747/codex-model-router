@@ -13,9 +13,5 @@ let package = Package(
       path: "Sources",
       resources: [.process("Resources")]
     ),
-    .testTarget(
-      name: "ModelRouterTrayTests",
-      dependencies: ["ModelRouterTray"]
-    ),
   ],
 )

@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
 
 import {
+  AUTO_ANNOUNCE_WINDOW_MS,
+  annotateNewModelAnnouncements,
   buildMergedCatalog,
   buildLoginFreeCatalog,
+  clampModelEfforts,
+  codexEffortVocabulary,
+  nativeCatalogIsReusable,
   routedModel,
-  writeModelCatalogJson,
 } from "../src/catalog.mjs";
 
 const template = {
@@ -39,25 +40,8 @@ const grok = {
   autoCompact: 440000,
   inputModalities: ["text", "image"],
   compHash: "grok-oauth-grok-4-5-v1",
+  multiAgentVersion: "v2",
 };
-
-test("model catalog writer stores its generation timestamp with models", () => {
-  const stateDir = mkdtempSync(path.join(os.tmpdir(), "codex-router-catalog-writer-"));
-  const target = path.join(stateDir, "merged-models.json");
-  try {
-    writeModelCatalogJson(
-      [{ slug: "gpt-5.6-sol", visibility: "list" }],
-      "2026-08-03T12:00:00.000Z",
-      target,
-    );
-    assert.deepEqual(JSON.parse(readFileSync(target, "utf8")), {
-      catalogUpdatedAt: "2026-08-03T12:00:00.000Z",
-      models: [{ slug: "gpt-5.6-sol", visibility: "list" }],
-    });
-  } finally {
-    rmSync(stateDir, { recursive: true, force: true });
-  }
-});
 
 test("routed models rewrite GPT identity text to the external model name", () => {
   const model = routedModel(template, grok);
@@ -68,65 +52,118 @@ test("routed models rewrite GPT identity text to the external model name", () =>
   assert.match(model.model_messages.instructions_template, /based on Grok 4\.5/);
   assert.doesNotMatch(model.model_messages.instructions_template, /GPT-5/);
   assert.equal(model.model_messages.instructions_variables.personality_default, "");
+  assert.equal(model.multi_agent_version, "v2");
 });
 
-test("routed catalog retains canonical external metadata without replacing native identity", () => {
-  const native = { ...template, slug: "gpt-5.6-sol", display_name: "Sol", role: "native-sol" };
-  const merged = buildMergedCatalog(
-    { models: [native] },
-    [{ ...grok, slug: "qwen-plan/qwen3.7-max", provider: "qwen-plan", listed: true }],
+test("routed models are native v2 spawn-agent model overrides", () => {
+  const model = routedModel(template, grok);
+  assert.equal(model.visibility, "list");
+  assert.equal(model.supported_in_api, true);
+  assert.equal(model.multi_agent_version, "v2");
+});
+
+test("routed models advertise reasoning summaries only when the registry opts in", () => {
+  // Default stays off: external models must not claim summary support untested.
+  const plain = routedModel(template, grok);
+  assert.equal(plain.supports_reasoning_summaries, false);
+  assert.equal(plain.default_reasoning_summary, "none");
+  const summarized = routedModel(template, {
+    ...grok,
+    supportsReasoningSummaries: true,
+    defaultReasoningSummary: "auto",
+  });
+  assert.equal(summarized.supports_reasoning_summaries, true);
+  assert.equal(summarized.default_reasoning_summary, "auto");
+});
+
+test("routed models announce availability only when curated with NUX copy", () => {
+  // Default stays null: an empty announcement card must never render.
+  const plain = routedModel(template, grok);
+  assert.equal(plain.availability_nux, null);
+  const announced = routedModel(template, {
+    ...grok,
+    availabilityNux: "  Grok 4.5 now routes through your own X subscription.  ",
+  });
+  assert.deepEqual(announced.availability_nux, {
+    message: "Grok 4.5 now routes through your own X subscription.",
+  });
+});
+
+test("first capture seeds announcement state without announcing anything", () => {
+  const { models, announcedAt } = annotateNewModelAnnouncements([grok], null, new Set(), 1000);
+  assert.equal(models[0].availabilityNux, undefined);
+  assert.equal(announcedAt.get(grok.slug), 0);
+});
+
+test("models new since the last capture announce for a window, then go quiet", () => {
+  const seeded = new Map([["kimi-oauth/k3", 0]]);
+  const now = 5000;
+  const { models, announcedAt } = annotateNewModelAnnouncements([grok], seeded, new Set(), now);
+  assert.equal(
+    models[0].availabilityNux,
+    "Grok 4.5 (OAuth) just landed in your model picker. It comes with a 500K-token context window and image input.",
   );
-  const nativeModel = merged.find((model) => model.slug === "gpt-5.6-sol");
-  const externalModel = merged.find((model) => model.slug === "qwen-plan/qwen3.7-max");
-  assert.equal(nativeModel.display_name, "Sol");
-  assert.equal(nativeModel.role, "native-sol");
-  assert.equal(externalModel.provider, "qwen-plan");
-  assert.equal(externalModel.listed, true);
-  assert.equal(externalModel.visibility, "list");
+  assert.equal(announcedAt.get(grok.slug), now);
+  // Within the window the copy persists across rebuilds; after it, silence.
+  const later = annotateNewModelAnnouncements([grok], announcedAt, new Set(), now + 1);
+  assert.ok(later.models[0].availabilityNux);
+  const expired = annotateNewModelAnnouncements(
+    [grok],
+    announcedAt,
+    new Set(),
+    now + AUTO_ANNOUNCE_WINDOW_MS,
+  );
+  assert.equal(expired.models[0].availabilityNux, undefined);
+  assert.equal(expired.announcedAt.get(grok.slug), now);
+});
+
+test("curated copy and locally curated models are left alone by auto-announce", () => {
+  const seeded = new Map();
+  const curated = { ...grok, availabilityNux: "Hand-written copy." };
+  const { models } = annotateNewModelAnnouncements([curated], seeded, new Set(), 1000);
+  assert.equal(models[0].availabilityNux, "Hand-written copy.");
+  const userModel = { ...grok, slug: "deepseek/user-added" };
+  const skipped = annotateNewModelAnnouncements(
+    [userModel],
+    seeded,
+    new Set(["deepseek/user-added"]),
+    1000,
+  );
+  assert.equal(skipped.models[0].availabilityNux, undefined);
+});
+
+test("routed models carry a migration prompt only when curated with upgradeTo", () => {
+  const plain = routedModel(template, grok);
+  assert.equal(plain.upgrade, null);
+  const upgraded = routedModel(template, {
+    ...grok,
+    upgradeTo: {
+      model: "kimi-oauth/k3",
+      markdown: "# Introducing Kimi K3\n\nSwitch from {model_from} to {model_to}.\n",
+    },
+  });
+  assert.deepEqual(upgraded.upgrade, {
+    model: "kimi-oauth/k3",
+    migration_markdown: "# Introducing Kimi K3\n\nSwitch from {model_from} to {model_to}.",
+  });
+});
+
+test("unverified routed models retain conservative v1 collaboration", () => {
+  const model = routedModel(template, {
+    ...grok,
+    slug: "example/model",
+    multiAgentVersion: undefined,
+  });
+  assert.equal(model.multi_agent_version, "v1");
 });
 
 test("merged catalog preserves native GPT identity while rewriting routed models", () => {
   const merged = buildMergedCatalog({ models: [template] }, [grok]);
   const bySlug = new Map(merged.map((model) => [model.slug, model]));
   assert.match(bySlug.get("gpt-5.5").base_instructions, /based on GPT-5/);
+  assert.equal(bySlug.get("gpt-5.5").supports_reasoning_summaries, false);
   assert.match(bySlug.get("grok-oauth/grok-4.5").base_instructions, /based on Grok 4\.5/);
   assert.doesNotMatch(bySlug.get("grok-oauth/grok-4.5").base_instructions, /GPT-5/);
-});
-
-test("merged catalog shows only current native generations and routed SOTA models", () => {
-  const nativeModels = [
-    { ...template, slug: "gpt-5.6-sol", priority: 1 },
-    { ...template, slug: "gpt-5.6-terra", priority: 2 },
-    { ...template, slug: "gpt-5.5", priority: 3 },
-    { ...template, slug: "gpt-5.4", priority: 4 },
-  ];
-  const oldRouted = {
-    ...grok,
-    slug: "opencode-go/grok-4.5",
-    displayName: "Grok 4.5 (OpenCode Go)",
-    priority: 100,
-    pickerVisibility: "hide",
-  };
-  const currentRouted = {
-    ...grok,
-    slug: "opencode-go/grok-4.6",
-    displayName: "Grok 4.6 (OpenCode Go)",
-    priority: 101,
-    pickerVisibility: "list",
-  };
-
-  const merged = buildMergedCatalog({ models: nativeModels }, [oldRouted, currentRouted]);
-  assert.deepEqual(
-    merged.filter((model) => model.visibility === "list").map((model) => model.slug),
-    [
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-      "gpt-5.5",
-      "opencode-go/grok-4.6",
-    ],
-  );
-  assert.ok(merged.some((model) => model.slug === "gpt-5.4"));
-  assert.ok(merged.some((model) => model.slug === "opencode-go/grok-4.5"));
 });
 
 test("login-free catalogs contain only authenticated external models", () => {
@@ -187,4 +224,95 @@ test("login-free catalog keeps overflow models visible under their own slugs", (
   const bySlug = new Map(models.map((model) => [model.slug, model]));
   assert.equal(bySlug.get("kimi-oauth/kimi-for-coding").visibility, "list");
   assert.equal(bySlug.get("grok-oauth/grok-4.5").visibility, "hide");
+});
+
+test("effort vocabulary follows the installed codex build's enum history", () => {
+  // max and ultra joined the enum in 0.143.0.
+  const legacy = codexEffortVocabulary("codex-cli 0.142.5");
+  assert.deepEqual(
+    [...legacy].sort(),
+    ["high", "low", "medium", "minimal", "xhigh"],
+  );
+  assert.ok(codexEffortVocabulary("codex-cli 0.143.0").has("max"));
+  assert.ok(codexEffortVocabulary("codex-cli 0.147.0-alpha.1.2").has("ultra"));
+  // A prerelease of the boundary build may predate the variants, and an
+  // unknown version must clamp rather than risk an unparseable picker level.
+  assert.ok(!codexEffortVocabulary("codex-cli 0.143.0-alpha.3").has("max"));
+  assert.ok(!codexEffortVocabulary(undefined).has("max"));
+});
+
+test("efforts the installed codex build cannot parse clamp to the nearest supported tier", () => {
+  const vocabulary = codexEffortVocabulary("codex-cli 0.141.0");
+  const [deepseek] = clampModelEfforts(
+    [
+      {
+        ...grok,
+        defaultEffort: "max",
+        reasoningLevels: [
+          { effort: "low", description: "Faster reasoning" },
+          { effort: "high", description: "Deep reasoning" },
+          { effort: "max", description: "Maximum reasoning" },
+        ],
+      },
+    ],
+    vocabulary,
+  );
+  // Codex 0.141 drops unknown enum variants, so "max" must reach it as xhigh
+  // (issue #57); the forwarder already folds xhigh back to the upstream max.
+  assert.deepEqual(deepseek.reasoningLevels, [
+    { effort: "low", description: "Faster reasoning" },
+    { effort: "high", description: "Deep reasoning" },
+    { effort: "xhigh", description: "Maximum reasoning" },
+  ]);
+  assert.equal(deepseek.defaultEffort, "xhigh");
+});
+
+test("clamped duplicates collapse onto the model's genuine entry for that tier", () => {
+  const vocabulary = codexEffortVocabulary("codex-cli 0.141.0");
+  const [opus] = clampModelEfforts(
+    [
+      {
+        ...grok,
+        defaultEffort: "max",
+        reasoningLevels: [
+          { effort: "xhigh", description: "Extended reasoning" },
+          { effort: "max", description: "Maximum reasoning" },
+        ],
+      },
+    ],
+    vocabulary,
+  );
+  assert.deepEqual(opus.reasoningLevels, [
+    { effort: "xhigh", description: "Extended reasoning" },
+  ]);
+  assert.equal(opus.defaultEffort, "xhigh");
+});
+
+test("models stay untouched when the installed build understands their efforts", () => {
+  const vocabulary = codexEffortVocabulary("codex-cli 0.146.1");
+  const original = {
+    ...grok,
+    defaultEffort: "max",
+    reasoningLevels: [
+      { effort: "high", description: "Deep reasoning" },
+      { effort: "max", description: "Maximum reasoning" },
+    ],
+  };
+  const [unchanged] = clampModelEfforts([original], vocabulary);
+  assert.equal(unchanged, original);
+});
+
+test("native catalog cache is reusable only for the codex build that captured it", () => {
+  const captured = { captured_with: "codex-cli 0.142.5", models: [template] };
+
+  assert.equal(nativeCatalogIsReusable(captured, "codex-cli 0.142.5"), true);
+  assert.equal(nativeCatalogIsReusable(captured, "codex-cli 0.146.1"), false);
+  // Unknown current version: no binary to re-ask, so keep what we have.
+  assert.equal(nativeCatalogIsReusable(captured, undefined), true);
+  // Un-stamped caches predate version tracking; re-capture when we can ask.
+  assert.equal(nativeCatalogIsReusable({ models: [template] }, "codex-cli 0.146.1"), false);
+  assert.equal(nativeCatalogIsReusable({ models: [template] }, undefined), true);
+  // Invalid or empty caches are never reusable.
+  assert.equal(nativeCatalogIsReusable(undefined, undefined), false);
+  assert.equal(nativeCatalogIsReusable({ models: [] }, "codex-cli 0.146.1"), false);
 });

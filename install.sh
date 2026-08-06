@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-repository_url=${CODEX_ROUTER_REPOSITORY_URL:-https://github.com/duolahypercho/codex-router.git}
+repository_url=${CODEX_ROUTER_REPOSITORY_URL:-https://github.com/DrOetker747/codex-model-router.git}
 default_data_dir=${XDG_DATA_HOME:-$HOME/.local/share}
 install_dir=$default_data_dir/codex-router
 prepare_only=false
@@ -19,11 +19,11 @@ usage() {
   cat <<'EOF'
 Usage: install.sh [options]
 
-Install external model routes for Codex or Cursor.
+Install external model routes for Codex.
 
 Options:
   --install-dir PATH  Stable checkout used by the background service
-  --target APP        Install for "codex" (default) or "cursor"
+  --target APP        Install for "codex" (the default and only target)
   --prepare-only      Install dependencies without changing either app
   --api-key           Alias for --kimi-api-key
   --kimi-api-key      Prompt securely for a Kimi Platform API key
@@ -52,7 +52,7 @@ die() {
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --target)
-      [ "$#" -ge 2 ] || die "--target requires codex or cursor"
+      [ "$#" -ge 2 ] || die "--target requires codex"
       target=$2
       shift 2
       ;;
@@ -126,8 +126,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$target" in
-  codex|cursor) ;;
-  *) die "--target must be codex or cursor" ;;
+  codex) ;;
+  *) die "--target must be codex" ;;
 esac
 if [ "$target" != codex ] && [ "$migrate_known" = true ]; then
   die "--migrate-known applies only to the Codex target"
@@ -154,7 +154,7 @@ if [ -z "$repo_dir" ]; then
   if [ -d "$install_dir/.git" ]; then
     origin_url=$(git -C "$install_dir" remote get-url origin 2>/dev/null || true)
     case "$origin_url" in
-      "$repository_url"|https://github.com/duolahypercho/codex-router|https://github.com/duolahypercho/codex-router.git|git@github.com:duolahypercho/codex-router.git)
+      "$repository_url"|https://github.com/DrOetker747/codex-model-router|https://github.com/DrOetker747/codex-model-router.git|git@github.com:DrOetker747/codex-model-router.git)
         ;;
       *)
         die "$install_dir already contains a different Git repository"
@@ -217,17 +217,9 @@ if ! "$repo_dir/bin/setup" "$@"; then
   die "setup failed"
 fi
 
-if [ "$target" = cursor ]; then
-  cat <<'EOF'
-
-Cursor Router is installed. Run `./bin/model-router cursor setup` for the Base
-URL, key, and model IDs to paste into Cursor's model settings.
-EOF
-else
-  cat <<'EOF'
+cat <<'EOF'
 
 Codex Router is installed. Fully quit Codex, reopen it, and start a new task.
 The model picker will show only the providers you enabled while preserving
 native GPT models.
 EOF
-fi

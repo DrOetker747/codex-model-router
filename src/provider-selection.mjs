@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { protectPrivateFile } from "./file-security.mjs";
 import { PROVIDER_SELECTION_PATH, STATE_DIR, TARGET } from "./paths.mjs";
 import { LISTED_MODELS, PROVIDERS } from "./model-registry.mjs";
+import { targetCli } from "./target-integration.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
 import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { credentialStatus } from "./provider-credentials.mjs";
@@ -22,19 +23,33 @@ function providerIds() {
   return [...PROVIDERS.keys()];
 }
 
+// Protocol variants (registry `variantOf`) share their parent's credential and
+// must never be selectable apart from it: the selection file stores only
+// canonical parent ids, and every read expands a parent back into its family.
+// That way a selection written before a variant existed still exposes it.
+export function canonicalProviderId(id) {
+  return PROVIDERS.get(id)?.variantOf || id;
+}
+
+function expandProviderIds(ids) {
+  const selected = new Set(ids);
+  for (const provider of PROVIDERS.values()) {
+    if (provider.variantOf && selected.has(provider.variantOf)) {
+      selected.add(provider.id);
+    }
+  }
+  return [...selected];
+}
+
 export function validateProviderIds(values) {
-  const ids = [
-    ...new Set(
-      values
-        .map((value) => String(value).trim())
-        .filter(Boolean)
-        .map((value) => RETIRED_PROVIDER_ALIASES.get(value) || value),
-    ),
-  ];
-  for (const id of ids) {
+  const named = values
+    .map((value) => String(value).trim())
+    .filter(Boolean)
+    .map((value) => RETIRED_PROVIDER_ALIASES.get(value) || value);
+  for (const id of named) {
     if (!PROVIDERS.has(id)) throw new Error(`Unknown provider: ${id}`);
   }
-  return ids;
+  return [...new Set(named.map((id) => canonicalProviderId(id)))];
 }
 
 export function configuredProviderIds() {
@@ -66,7 +81,7 @@ export function readProviderSelection() {
     if (parsed?.version !== 1 || !Array.isArray(parsed.providers)) {
       throw new Error("version/providers are invalid");
     }
-    return validateProviderIds(parsed.providers);
+    return expandProviderIds(validateProviderIds(parsed.providers));
   } catch (error) {
     throw new Error(
       `Invalid provider selection ${PROVIDER_SELECTION_PATH}: ${
@@ -92,6 +107,8 @@ export function writeProviderSelection(values) {
   return providers;
 }
 
+// Enable/disable act on the whole variant family: toggling opencode-go (or any
+// of its protocol variants) shows or hides every model that key can serve.
 export function enableProvider(providerId) {
   const current = existsSync(PROVIDER_SELECTION_PATH)
     ? readProviderSelection()
@@ -100,11 +117,13 @@ export function enableProvider(providerId) {
 }
 
 export function disableProvider(providerId) {
-  if (!existsSync(PROVIDER_SELECTION_PATH)) {
-    return writeProviderSelection(configuredProviderIds().filter((id) => id !== providerId));
-  }
-  const next = readProviderSelection().filter((id) => id !== providerId);
-  return writeProviderSelection(next);
+  const target = canonicalProviderId(providerId);
+  const current = existsSync(PROVIDER_SELECTION_PATH)
+    ? readProviderSelection()
+    : configuredProviderIds();
+  return writeProviderSelection(
+    current.filter((id) => canonicalProviderId(id) !== target),
+  );
 }
 
 export function selectedListedModels() {
@@ -145,9 +164,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       if (providers.length === 0) {
         throw new Error(
           `No provider credential is configured. Run ${
-            TARGET === "cursor"
-              ? "./bin/model-router cursor setup --guided"
-              : "./bin/setup --guided"
+            targetCli("setup --guided")
           } before installing.`,
         );
       }
@@ -156,9 +173,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       if (missing.length) {
         throw new Error(
           `Selected providers need persistent authentication: ${missing.join(", ")}. Run ${
-            TARGET === "cursor"
-              ? "./bin/model-router cursor setup --guided"
-              : "./bin/setup --guided"
+            targetCli("setup --guided")
           }.`,
         );
       }

@@ -1,7 +1,0 @@
-#!/bin/sh
-set -eu
-
-repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-bundle_dir=${MODEL_PICKER_APP_PATH:-"$HOME/Applications/Model Picker.app"}
-"$repo_dir/scripts/build-macos-model-picker.sh" "$bundle_dir" >/dev/null
-open "$bundle_dir"

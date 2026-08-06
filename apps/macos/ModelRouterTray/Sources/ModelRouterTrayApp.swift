@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import ServiceManagement
 import SwiftUI
 
 let routerAccent = Color(red: 0.36, green: 0.66, blue: 0.91)
@@ -9,6 +10,7 @@ let routerYellow = Color(red: 0.94, green: 0.68, blue: 0.25)
 let routerRed = Color(red: 0.91, green: 0.35, blue: 0.32)
 let routerInk = Color(red: 0.035, green: 0.043, blue: 0.055)
 let routerMuted = Color.secondary.opacity(0.72)
+let removalArmWindow: TimeInterval = 4
 
 enum RouterActivityState: String, Decodable {
   case idle
@@ -37,14 +39,20 @@ enum RouterActivityState: String, Decodable {
 
 @main
 struct ModelRouterTrayApp: App {
-  @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+  @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
+  @ObservedObject private var store = RouterStore.shared
 
   var body: some Scene {
-    MenuBarExtra {
-      TrayView(store: appDelegate.store)
+    // The insertion binding is read-only from our side: visibility is decided
+    // by the presence mode, not by the system writing back.
+    MenuBarExtra(isInserted: Binding(
+      get: { store.surfacesVisible },
+      set: { _ in }
+    )) {
+      TrayView(store: store)
         .frame(width: 352, height: 560)
     } label: {
-      StatusItemLabel(store: appDelegate.store)
+      StatusItemLabel(store: store)
     }
     .menuBarExtraStyle(.window)
   }
@@ -52,21 +60,23 @@ struct ModelRouterTrayApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-  let store = RouterStore()
+  let store = RouterStore.shared
   private var islandController: IslandWindowController?
   private var desktopPanelController: DesktopPanelWindowController?
-  private var islandVisibility: AnyCancellable?
+  private var surfaceVisibility: AnyCancellable?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.accessory)
     islandController = IslandWindowController(store: store)
     desktopPanelController = DesktopPanelWindowController(store: store)
-    islandVisibility = store.$islandMode
-      .removeDuplicates()
-      .sink { [weak self] mode in
-        self?.islandController?.setVisible(mode == .notch)
-        self?.desktopPanelController?.setVisible(mode == .desktop)
+    surfaceVisibility = store.$surfacesVisible
+      .combineLatest(store.$islandMode)
+      .sink { [weak self] visible, mode in
+        self?.islandController?.setVisible(visible && mode == .notch)
+        self?.desktopPanelController?.setVisible(visible && mode == .desktop)
       }
+    store.bootstrapLaunchAtLogin()
+    store.startHostAppObservation()
     Task { await store.startPolling() }
     Task { await store.startActivityPolling() }
     Task { await store.startAccountUsagePolling() }
@@ -76,6 +86,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 @MainActor
 final class RouterStore: ObservableObject {
+  static let shared = RouterStore()
+
   @Published private(set) var snapshot = RouterSnapshot.empty
   @Published private(set) var isRefreshing = false
   @Published private(set) var message: String?
@@ -95,8 +107,10 @@ final class RouterStore: ObservableObject {
   @Published private(set) var maintenanceMessage: String?
   @Published private(set) var maintenanceSucceeded = false
   @Published private(set) var islandMode: IslandMode
-  @Published private(set) var modelSelectionInProgress = false
-  @Published private(set) var modelSelectionError: String?
+  @Published private(set) var launchAtLogin = false
+  @Published private(set) var presenceMode: TrayPresenceMode
+  @Published private(set) var hostAppRunning = false
+  @Published private(set) var surfacesVisible = true
 
   private var polling = false
   private var activityPolling = false
@@ -105,12 +119,59 @@ final class RouterStore: ObservableObject {
   private let defaults = UserDefaults.standard
   private let islandVisibilityKey = "ModelRouterTray.islandVisible"
   private let islandModeKey = "ModelRouterTray.islandMode"
+  private let loginItemAutoRegisteredKey = "ModelRouterTray.loginItemAutoRegistered"
+  private let loginItemBundlePathKey = "ModelRouterTray.loginItemBundlePath"
+  private let presenceModeKey = "ModelRouterTray.presenceMode"
+  // The Codex desktop app plus the ChatGPT desktop app, either of which counts
+  // as "Codex is open" for the follow mode.
+  private let hostAppBundleIDs = ["com.openai.codex", "com.openai.chat"]
+  private var workspaceObservers: [NSObjectProtocol] = []
   private var accountUsageResolved = false
   private var hasResolvedInitialUsageProvider = false
   private var hasObservedActiveProvider = false
   private var manuallySelectedUsageProvider = false
   private var latestObservedActivityRequestID: String?
   private var activityHealthFailureStartedAt: Date?
+  private var dailyUsageCache: [DailyUsageCacheKey: [DailyUsagePoint]] = [:]
+  private var localUsageTotalsCache: [LocalUsageTotalsCacheKey: UsageTotals] = [:]
+
+  private struct DailyUsageCacheBucket: Hashable {
+    let startDate: String
+    let tokens: Int64
+  }
+
+  private struct DailyUsageCacheKey: Hashable {
+    let providerID: String
+    let days: Int
+    let today: Date
+    let buckets: [DailyUsageCacheBucket]
+  }
+
+  private struct LocalUsageTotalsCacheBucket: Hashable {
+    let startDate: String
+    let tokens: Int64
+    let requests: Int
+  }
+
+  private struct LocalUsageTotalsCacheKey: Hashable {
+    let providerID: String
+    let days: Int
+    let today: Date
+    let buckets: [LocalUsageTotalsCacheBucket]
+  }
+
+  private struct UsageTotals {
+    let tokens: Double
+    let requests: Int
+  }
+
+  private static let dayKeyFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.dateFormat = "yyyy-MM-dd"
+    return formatter
+  }()
 
   init() {
     selectedUsageProviderID = "openai"
@@ -121,6 +182,13 @@ final class RouterStore: ObservableObject {
     } else {
       // Migrate the pre-desktop-mode boolean setting.
       islandMode = defaults.bool(forKey: islandVisibilityKey) ? .notch : .off
+    }
+    if let raw = defaults.string(forKey: presenceModeKey),
+      let mode = TrayPresenceMode(rawValue: raw)
+    {
+      presenceMode = mode
+    } else {
+      presenceMode = .always
     }
   }
 
@@ -134,6 +202,102 @@ final class RouterStore: ObservableObject {
 
   var maintenanceRunning: Bool {
     providerOperation == "maintenance"
+  }
+
+  // SMAppService needs a real bundle identity; a bare `swift run` binary has
+  // none, so the login-item surface disappears in that mode instead of
+  // registering a broken item.
+  var launchAtLoginAvailable: Bool {
+    Bundle.main.bundleIdentifier != nil
+  }
+
+  func bootstrapLaunchAtLogin() {
+    guard launchAtLoginAvailable else { return }
+    let service = SMAppService.mainApp
+    let bundlePath = Bundle.main.bundlePath
+    launchAtLogin = service.status == .enabled
+    let registeredPath = defaults.string(forKey: loginItemBundlePathKey)
+    // Migrate the first-run registration if the tray moved (for example from
+    // a checkout on a removable volume to the stable install). Older builds
+    // saved no path, so a one-time unregister/register replaces whatever the
+    // old login item points at when that item is still enabled.
+    if registeredPath != bundlePath && service.status == .enabled {
+      try? service.unregister()
+      try? service.register()
+      defaults.set(bundlePath, forKey: loginItemBundlePathKey)
+      launchAtLogin = service.status == .enabled
+      return
+    }
+    // Register once on first launch so the tray survives reboots without a
+    // manual relaunch. The stored flag makes this a one-time default: if the
+    // user later disables the item here or in System Settings, we never
+    // re-add it behind their back.
+    guard !defaults.bool(forKey: loginItemAutoRegisteredKey) else { return }
+    defaults.set(true, forKey: loginItemAutoRegisteredKey)
+    defaults.set(bundlePath, forKey: loginItemBundlePathKey)
+    guard service.status == .notRegistered || service.status == .notFound else { return }
+    do {
+      try service.register()
+      launchAtLogin = service.status == .enabled
+    } catch {
+      // Best-effort at launch; the Settings toggle surfaces errors on demand.
+    }
+  }
+
+  // In follow mode every tray surface tracks the Codex/ChatGPT desktop apps.
+  // The process itself stays resident as the watcher — quitting on app exit
+  // would leave nothing around to notice the next launch.
+  func startHostAppObservation() {
+    let center = NSWorkspace.shared.notificationCenter
+    for name in [
+      NSWorkspace.didLaunchApplicationNotification,
+      NSWorkspace.didTerminateApplicationNotification,
+    ] {
+      workspaceObservers.append(
+        center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+          Task { @MainActor in self?.refreshHostAppRunning() }
+        }
+      )
+    }
+    refreshHostAppRunning()
+  }
+
+  func setPresenceMode(_ mode: TrayPresenceMode) {
+    presenceMode = mode
+    defaults.set(mode.rawValue, forKey: presenceModeKey)
+    refreshSurfacesVisible()
+  }
+
+  private func refreshHostAppRunning() {
+    hostAppRunning = hostAppBundleIDs.contains { identifier in
+      NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+        .contains { !$0.isTerminated }
+    }
+    refreshSurfacesVisible()
+  }
+
+  private func refreshSurfacesVisible() {
+    surfacesVisible = presenceMode == .always || hostAppRunning
+  }
+
+  func setLaunchAtLogin(_ enabled: Bool) {
+    guard launchAtLoginAvailable else { return }
+    let service = SMAppService.mainApp
+    do {
+      if enabled {
+        try service.register()
+        defaults.set(Bundle.main.bundlePath, forKey: loginItemBundlePathKey)
+        defaults.set(true, forKey: loginItemAutoRegisteredKey)
+      } else {
+        try service.unregister()
+      }
+    } catch {
+      message = "Login item: \(error.localizedDescription)"
+    }
+    launchAtLogin = service.status == .enabled
+    if service.status == .requiresApproval {
+      message = "Approve Model Router under System Settings › General › Login Items"
+    }
   }
 
   private static let providerShortNames: [String: String] = [
@@ -214,13 +378,24 @@ final class RouterStore: ObservableObject {
     return selectedAccountMetric?.resetDate
   }
 
+  /// Running chats, not in-flight HTTP requests. One chat fans out into many
+  /// requests (turns, subagents, compactions) and counting those reads as a
+  /// runaway number that never matches what the user has open.
+  var activeChatCount: Int {
+    var seen = Set<String>()
+    for request in activeRequests {
+      seen.insert(request.sessionId ?? request.sessionName ?? "request-\(request.id)")
+    }
+    return seen.count
+  }
+
   var hasConcurrentActivity: Bool {
-    activeRequestCount > 1
+    activeChatCount > 1
   }
 
   var activitySummaryLabel: String {
-    if activityState == .generating, activeRequestCount > 1 {
-      return "\(activeRequestCount) active"
+    if activityState == .generating, activeChatCount > 1 {
+      return "\(activeChatCount) chats"
     }
     return activityState.label
   }
@@ -278,6 +453,36 @@ final class RouterStore: ObservableObject {
 
   var visibleUsageCards: [UsageOverviewCard] {
     visibleUsageProviders.flatMap(usageCards(for:))
+  }
+
+  /// Every model the router has served, across all providers, heaviest first.
+  var overallModelUsage: [ModelUsageRow] {
+    guard let snapshot = providerUsage else { return [] }
+    return snapshot.providers
+      .flatMap { provider in
+        (provider.models ?? []).map { model in
+          ModelUsageRow(
+            providerID: provider.id,
+            providerName: provider.displayName,
+            model: model
+          )
+        }
+      }
+      .filter { $0.model.requests > 0 }
+      .sorted {
+        if $0.model.totalTokens != $1.model.totalTokens {
+          return $0.model.totalTokens > $1.model.totalTokens
+        }
+        return $0.model.requests > $1.model.requests
+      }
+  }
+
+  var overallTokenTotal: Int64 {
+    overallModelUsage.reduce(0) { $0 + $1.model.totalTokens }
+  }
+
+  var overallRequestTotal: Int {
+    overallModelUsage.reduce(0) { $0 + $1.model.requests }
   }
 
   func usageCards(for provider: UsageProviderChoice) -> [UsageOverviewCard] {
@@ -398,9 +603,8 @@ final class RouterStore: ObservableObject {
 
   private func focusUsageProvider(_ providerID: String) {
     guard usageProviderChoices.contains(where: { $0.id == providerID }) else { return }
-    let previousProvider = selectedUsageProviderID
+    guard selectedUsageProviderID != providerID else { return }
     selectedUsageProviderID = providerID
-    guard previousProvider != providerID else { return }
     Task {
       if providerID == "openai" {
         await refreshAccountUsage()
@@ -466,10 +670,12 @@ final class RouterStore: ObservableObject {
   func refreshAccountUsage() async {
     do {
       let output = try await runControl(arguments: ["account", "--json"])
-      accountUsage = try JSONDecoder().decode(CodexAccountUsage.self, from: output)
-      accountUsageError = nil
+      let nextUsage = try JSONDecoder().decode(CodexAccountUsage.self, from: output)
+      if accountUsage != nextUsage { accountUsage = nextUsage }
+      if accountUsageError != nil { accountUsageError = nil }
     } catch {
-      accountUsageError = error.localizedDescription
+      let nextError = error.localizedDescription
+      if accountUsageError != nextError { accountUsageError = nextError }
     }
     accountUsageResolved = true
     resolveInitialUsageProvider()
@@ -478,11 +684,13 @@ final class RouterStore: ObservableObject {
   func refreshProviderUsage() async {
     do {
       let output = try await runControl(arguments: ["provider-usage", "--json"])
-      providerUsage = try JSONDecoder().decode(ProviderUsageSnapshot.self, from: output)
-      providerUsageError = nil
+      let nextUsage = try JSONDecoder().decode(ProviderUsageSnapshot.self, from: output)
+      if providerUsage != nextUsage { providerUsage = nextUsage }
+      if providerUsageError != nil { providerUsageError = nil }
       resolveInitialUsageProvider()
     } catch {
-      providerUsageError = error.localizedDescription
+      let nextError = error.localizedDescription
+      if providerUsageError != nextError { providerUsageError = nextError }
     }
   }
 
@@ -504,10 +712,12 @@ final class RouterStore: ObservableObject {
     do {
       let output = try await runControl(arguments: ["providers", "--json"])
       let snapshot = try JSONDecoder().decode(ProviderSetupSnapshot.self, from: output)
-      providerSetup = Dictionary(uniqueKeysWithValues: snapshot.providers.map { ($0.id, $0) })
+      let nextSetup = Dictionary(uniqueKeysWithValues: snapshot.providers.map { ($0.id, $0) })
+      if providerSetup != nextSetup { providerSetup = nextSetup }
       resolveInitialUsageProvider()
     } catch {
-      message = error.localizedDescription
+      let nextMessage = error.localizedDescription
+      if message != nextMessage { message = nextMessage }
     }
   }
 
@@ -551,33 +761,56 @@ final class RouterStore: ObservableObject {
     }
   }
 
+  // The control plane already drops the provider from the Codex selection when
+  // the key file is deleted; this only makes that selection live.
+  func removeProviderKey(_ provider: String) async {
+    await performProviderOperation(
+      provider,
+      successMessage: "API key removed. Restart Codex to refresh its model picker."
+    ) {
+      _ = try await runControl(arguments: ["credential", provider, "--remove"])
+      _ = try? await runControl(arguments: ["apply", "--targets", "codex", "--activate"])
+    }
+  }
+
   func dailyTokens(days: Int) -> [Double] {
     dailyUsage(days: days).map(\.tokens)
   }
 
   func dailyUsage(days: Int) -> [DailyUsagePoint] {
-    let indexed: [String: Double]
+    let buckets: [DailyUsageCacheBucket]
     if selectedUsageUsesChatGPT {
-      guard let accountUsage else { return placeholderDailyUsage(days: days) }
-      indexed = Dictionary(uniqueKeysWithValues: accountUsage.dailyUsageBuckets.map {
-        ($0.startDate, Double($0.tokens))
-      })
+      buckets = accountUsage?.dailyUsageBuckets.map {
+        DailyUsageCacheBucket(startDate: $0.startDate, tokens: $0.tokens)
+      } ?? []
     } else {
-      guard let usage = selectedProviderUsage else { return placeholderDailyUsage(days: days) }
-      indexed = Dictionary(uniqueKeysWithValues: usage.dailyUsageBuckets.map {
-        ($0.startDate, Double($0.tokens))
-      })
+      buckets = selectedProviderUsage?.dailyUsageBuckets.map {
+        DailyUsageCacheBucket(startDate: $0.startDate, tokens: $0.tokens)
+      } ?? []
     }
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.calendar = Calendar(identifier: .gregorian)
-    formatter.dateFormat = "yyyy-MM-dd"
     let calendar = Calendar.current
     let today = calendar.startOfDay(for: .now)
-    return (0..<days).map { offset in
+    let cacheKey = DailyUsageCacheKey(
+      providerID: selectedUsageProviderID,
+      days: days,
+      today: today,
+      buckets: buckets
+    )
+    if let cached = dailyUsageCache[cacheKey] { return cached }
+
+    let indexed = Dictionary(uniqueKeysWithValues: buckets.map {
+      ($0.startDate, Double($0.tokens))
+    })
+    let points = (0..<days).map { offset in
       let date = calendar.date(byAdding: .day, value: offset - (days - 1), to: today) ?? today
-      return DailyUsagePoint(date: date, tokens: indexed[formatter.string(from: date)] ?? 0)
+      return DailyUsagePoint(
+        date: date,
+        tokens: indexed[Self.dayKeyFormatter.string(from: date)] ?? 0
+      )
     }
+    if dailyUsageCache.count >= 24 { dailyUsageCache.removeAll(keepingCapacity: true) }
+    dailyUsageCache[cacheKey] = points
+    return points
   }
 
   func localUsageTotals(days: Int) -> (tokens: Double, requests: Int) {
@@ -588,16 +821,37 @@ final class RouterStore: ObservableObject {
     guard providerID != "openai", let usage = providerUsage(for: providerID) else { return (0, 0) }
     let calendar = Calendar.current
     let today = calendar.startOfDay(for: .now)
+    let buckets = usage.dailyUsageBuckets.map {
+      LocalUsageTotalsCacheBucket(
+        startDate: $0.startDate,
+        tokens: $0.tokens,
+        requests: $0.requests
+      )
+    }
+    let cacheKey = LocalUsageTotalsCacheKey(
+      providerID: providerID,
+      days: days,
+      today: today,
+      buckets: buckets
+    )
+    if let cached = localUsageTotalsCache[cacheKey] {
+      return (cached.tokens, cached.requests)
+    }
+
     let firstDay = calendar.date(byAdding: .day, value: -(days - 1), to: today) ?? today
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.calendar = Calendar(identifier: .gregorian)
-    formatter.dateFormat = "yyyy-MM-dd"
-    return usage.dailyUsageBuckets.reduce(into: (tokens: 0.0, requests: 0)) { totals, bucket in
-      guard let date = formatter.date(from: bucket.startDate), date >= firstDay, date <= today else { return }
+    let totals = usage.dailyUsageBuckets.reduce(into: (tokens: 0.0, requests: 0)) { totals, bucket in
+      guard let date = Self.dayKeyFormatter.date(from: bucket.startDate),
+            date >= firstDay,
+            date <= today
+      else { return }
       totals.tokens += Double(bucket.tokens)
       totals.requests += bucket.requests
     }
+    if localUsageTotalsCache.count >= 48 {
+      localUsageTotalsCache.removeAll(keepingCapacity: true)
+    }
+    localUsageTotalsCache[cacheKey] = UsageTotals(tokens: totals.tokens, requests: totals.requests)
+    return totals
   }
 
   func localUsageSummary(for providerID: String, days: Int = 7) -> String {
@@ -611,17 +865,6 @@ final class RouterStore: ObservableObject {
     return "No traffic"
   }
 
-
-  private func placeholderDailyUsage(days: Int) -> [DailyUsagePoint] {
-    let calendar = Calendar.current
-    let today = calendar.startOfDay(for: .now)
-    return (0..<days).map { offset in
-      DailyUsagePoint(
-        date: calendar.date(byAdding: .day, value: offset - (days - 1), to: today) ?? today,
-        tokens: 0
-      )
-    }
-  }
 
   func setProvider(_ provider: String, enabled: Bool) async {
     guard providerOperation == nil else { return }
@@ -684,27 +927,6 @@ final class RouterStore: ObservableObject {
     }
   }
 
-  func selectModel(_ slug: String, restart: Bool) async {
-    guard !modelSelectionInProgress else { return }
-    modelSelectionInProgress = true
-    modelSelectionError = nil
-    defer { modelSelectionInProgress = false }
-    do {
-      _ = try await runControl(arguments: ["model-set", slug])
-      await refresh()
-      if restart {
-        try await restartCodexApp()
-        message = "Codex restarted with the selected model."
-      } else {
-        message = "Model saved for the next Codex task."
-      }
-    } catch {
-      modelSelectionError = error.localizedDescription
-      message = error.localizedDescription
-      await refresh()
-    }
-  }
-
   private func performProviderOperation(
     _ provider: String,
     successMessage: String,
@@ -757,18 +979,22 @@ final class RouterStore: ObservableObject {
       }
       let health = try JSONDecoder().decode(RouterHealth.self, from: data)
       let previousActivityState = activityState
+      let nextActiveRequests = health.activity.active ?? []
+      let nextActiveRequestCount = health.activity.activeCount ?? nextActiveRequests.count
       activityHealthFailureStartedAt = nil
-      activityState = health.activity.state
-      activeRequests = health.activity.active ?? []
-      activeRequestCount = health.activity.activeCount ?? activeRequests.count
-      activeModel = health.activity.model
+      if activityState != health.activity.state { activityState = health.activity.state }
+      if activeRequests != nextActiveRequests { activeRequests = nextActiveRequests }
+      if activeRequestCount != nextActiveRequestCount {
+        activeRequestCount = nextActiveRequestCount
+      }
+      if activeModel != health.activity.model { activeModel = health.activity.model }
       if let sessionName = health.activity.sessionName, !sessionName.isEmpty {
-        activitySessionName = sessionName
+        if activitySessionName != sessionName { activitySessionName = sessionName }
       }
       if health.activity.state == .generating,
          let provider = health.activity.provider {
         hasObservedActiveProvider = true
-        if let requestID = activeRequests.last?.id {
+        if let requestID = nextActiveRequests.last?.id {
           if requestID != latestObservedActivityRequestID {
             latestObservedActivityRequestID = requestID
             manuallySelectedUsageProvider = false
@@ -788,16 +1014,18 @@ final class RouterStore: ObservableObject {
   }
 
   private func recordActivityHealthFailure() {
-    activeRequests = []
-    activeRequestCount = 0
-    activeModel = nil
+    if !activeRequests.isEmpty { activeRequests = [] }
+    if activeRequestCount != 0 { activeRequestCount = 0 }
+    if activeModel != nil { activeModel = nil }
     let now = Date()
+    let nextState: RouterActivityState
     if let startedAt = activityHealthFailureStartedAt {
-      activityState = now.timeIntervalSince(startedAt) < 30 ? .starting : .error
+      nextState = now.timeIntervalSince(startedAt) < 30 ? .starting : .error
     } else {
       activityHealthFailureStartedAt = now
-      activityState = .starting
+      nextState = .starting
     }
+    if activityState != nextState { activityState = nextState }
   }
 
   private func resolveInitialUsageProvider() {
@@ -1001,7 +1229,7 @@ enum UsageRange: Int, CaseIterable, Identifiable {
   }
 }
 
-struct CodexAccountUsage: Decodable {
+struct CodexAccountUsage: Decodable, Equatable {
   let fetchedAt: String
   let planType: String?
   let limitId: String?
@@ -1009,9 +1237,18 @@ struct CodexAccountUsage: Decodable {
   let secondary: CodexRateLimitWindow?
   let dailyUsageBuckets: [CodexDailyUsageBucket]
   let summary: CodexUsageSummary
+
+  static func == (lhs: CodexAccountUsage, rhs: CodexAccountUsage) -> Bool {
+    lhs.planType == rhs.planType
+      && lhs.limitId == rhs.limitId
+      && lhs.primary == rhs.primary
+      && lhs.secondary == rhs.secondary
+      && lhs.dailyUsageBuckets == rhs.dailyUsageBuckets
+      && lhs.summary == rhs.summary
+  }
 }
 
-struct CodexRateLimitWindow: Decodable {
+struct CodexRateLimitWindow: Decodable, Equatable {
   let usedPercent: Int
   let remainingPercent: Int
   let windowDurationMins: Int?
@@ -1034,30 +1271,34 @@ struct CodexRateLimitWindow: Decodable {
   }
 }
 
-struct CodexDailyUsageBucket: Decodable {
+struct CodexDailyUsageBucket: Decodable, Equatable {
   let startDate: String
   let tokens: Int64
 }
 
-struct DailyUsagePoint: Identifiable {
+struct DailyUsagePoint: Identifiable, Equatable {
   let date: Date
   let tokens: Double
   var id: Date { date }
 }
 
-struct CodexUsageSummary: Decodable {
+struct CodexUsageSummary: Decodable, Equatable {
   let lifetimeTokens: Int64?
   let peakDailyTokens: Int64?
   let currentStreakDays: Int?
 }
 
-struct ProviderUsageSnapshot: Decodable {
+struct ProviderUsageSnapshot: Decodable, Equatable {
   let fetchedAt: String
   let scope: String
   let providers: [RouterProviderUsage]
+
+  static func == (lhs: ProviderUsageSnapshot, rhs: ProviderUsageSnapshot) -> Bool {
+    lhs.scope == rhs.scope && lhs.providers == rhs.providers
+  }
 }
 
-struct RouterProviderUsage: Decodable, Identifiable {
+struct RouterProviderUsage: Decodable, Identifiable, Equatable {
   let id: String
   let displayName: String
   let credentialType: String
@@ -1070,9 +1311,33 @@ struct RouterProviderUsage: Decodable, Identifiable {
   let totalTokens: Int64
   let dailyUsageBuckets: [ProviderDailyUsageBucket]
   let account: ProviderAccountUsage
+  // Optional so a newer tray still decodes snapshots from an older router.
+  let models: [RouterModelUsage]?
 }
 
-struct ProviderAccountUsage: Decodable {
+struct RouterModelUsage: Decodable, Identifiable, Equatable {
+  let slug: String
+  let displayName: String
+  let requests: Int
+  let successfulRequests: Int
+  let meteredRequests: Int
+  let inputTokens: Int64
+  let outputTokens: Int64
+  let totalTokens: Int64
+  let lastUsedAt: String?
+
+  var id: String { slug }
+}
+
+struct ModelUsageRow: Identifiable {
+  let providerID: String
+  let providerName: String
+  let model: RouterModelUsage
+
+  var id: String { "\(providerID)/\(model.slug)" }
+}
+
+struct ProviderAccountUsage: Decodable, Equatable {
   let status: String
   let source: String
   let metrics: [ProviderAccountMetric]
@@ -1081,7 +1346,7 @@ struct ProviderAccountUsage: Decodable {
   let dashboardUrl: String?
 }
 
-struct ProviderAccountMetric: Decodable {
+struct ProviderAccountMetric: Decodable, Equatable {
   let kind: String
   let label: String
   let usedPercent: Double?
@@ -1099,7 +1364,7 @@ struct ProviderAccountMetric: Decodable {
   var resetDate: Date? { resetAt.map(Date.init(timeIntervalSince1970:)) }
 }
 
-struct ProviderDailyUsageBucket: Decodable {
+struct ProviderDailyUsageBucket: Decodable, Equatable {
   let startDate: String
   let tokens: Int64
   let requests: Int
@@ -1138,9 +1403,6 @@ struct RouterModel: Decodable, Identifiable {
   let displayName: String
   let provider: String
   let enabled: Bool
-  let pickerVisibility: String?
-  let native: Bool?
-  let family: String?
   var id: String { slug }
 }
 
@@ -1150,6 +1412,19 @@ struct UsageProviderChoice: Identifiable {
   let shortName: String
   let detail: String
   let isEnabled: Bool
+}
+
+enum TrayPresenceMode: String, CaseIterable, Identifiable {
+  case always
+  case followCodex
+
+  var id: String { rawValue }
+  var label: String {
+    switch self {
+    case .always: return "Always"
+    case .followCodex: return "With Codex"
+    }
+  }
 }
 
 enum IslandMode: String, CaseIterable, Identifiable {
@@ -1192,7 +1467,7 @@ struct ProviderSetupSnapshot: Decodable {
   let providers: [ProviderSetupState]
 }
 
-struct ProviderSetupState: Decodable, Identifiable {
+struct ProviderSetupState: Decodable, Identifiable, Equatable {
   let id: String
   let displayName: String
   let kind: String
@@ -1224,8 +1499,25 @@ private struct StatusItemLabel: View {
   }
 }
 
+enum TrayTab: String, CaseIterable, Identifiable {
+  case usage
+  case status
+  case settings
+
+  var id: String { rawValue }
+
+  var label: String {
+    switch self {
+    case .usage: return "Usage"
+    case .status: return "Status"
+    case .settings: return "Settings"
+    }
+  }
+}
+
 private struct TrayView: View {
   @ObservedObject var store: RouterStore
+  @AppStorage("trayTab") private var tab: TrayTab = .usage
 
   private var target: RouterTarget? { store.snapshot.targets["codex"] }
   private var providers: [(id: String, enabled: Bool)] {
@@ -1285,78 +1577,240 @@ private struct TrayView: View {
   }
 
   private func content(for target: RouterTarget) -> some View {
-    ScrollView(showsIndicators: false) {
-      VStack(alignment: .leading, spacing: 14) {
-        if !store.visibleUsageProviders.isEmpty {
-          sectionLabel("Current usage", detail: store.selectedUsageProvider.displayName)
-          ProviderUsageSection(store: store)
-            .id(store.selectedUsageProviderID)
-          sectionLabel("All usage", detail: "7-day snapshot")
-          AllProviderUsageGrid(store: store)
+    VStack(alignment: .leading, spacing: 12) {
+      Picker("", selection: $tab) {
+        ForEach(TrayTab.allCases) { item in
+          Text(item.label).tag(item)
         }
-        HStack(spacing: 12) {
-          VStack(alignment: .leading, spacing: 3) {
-            Text("Dynamic Island")
-              .font(.system(size: 12, weight: .medium))
-            Text(store.islandMode == .desktop
-              ? "Quotas and live activity pinned to the desktop"
-              : "Show provider usage and activity status")
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+
+      ScrollView(showsIndicators: false) {
+        VStack(alignment: .leading, spacing: 14) {
+          switch tab {
+          case .usage: usageTab
+          case .status: statusTab
+          case .settings: settingsTab(for: target)
+          }
+        }
+        .padding(.vertical, 1)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var usageTab: some View {
+    if store.visibleUsageProviders.isEmpty && store.overallModelUsage.isEmpty {
+      emptyNotice("No usage recorded yet")
+    }
+    if !store.visibleUsageProviders.isEmpty {
+      sectionLabel("Current usage", detail: store.selectedUsageProvider.displayName)
+      ProviderUsageSection(store: store)
+        .id(store.selectedUsageProviderID)
+      sectionLabel("All usage", detail: "7-day snapshot")
+      AllProviderUsageGrid(store: store)
+    }
+    if !store.overallModelUsage.isEmpty {
+      sectionLabel(
+        "Tokens by model",
+        detail: "\(compactTokenCount(Double(store.overallTokenTotal))) tok · \(store.overallRequestTotal) req"
+      )
+      ModelUsageBreakdown(store: store)
+    }
+  }
+
+  @ViewBuilder
+  private var statusTab: some View {
+    sectionLabel("Router", detail: store.activitySummaryLabel)
+    HStack(spacing: 8) {
+      Circle()
+        .fill(store.activityState.tint)
+        .frame(width: 7, height: 7)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(store.activityState.label)
+          .font(.system(size: 12, weight: .medium))
+        Text(activityDetail)
+          .font(.system(size: 9))
+          .foregroundStyle(routerMuted)
+      }
+      Spacer()
+    }
+
+    sectionLabel(
+      "Live requests",
+      detail: store.activeRequests.isEmpty ? "None" : "\(store.activeRequests.count)"
+    )
+    if store.activeRequests.isEmpty {
+      emptyNotice("Nothing in flight")
+    } else {
+      VStack(spacing: 6) {
+        ForEach(store.activeRequests) { request in
+          HStack(spacing: 6) {
+            Text(store.modelLabel(for: request))
+              .font(.system(size: 10, weight: .medium))
+              .lineLimit(1)
+            Text(store.displayName(forProvider: request.provider))
+              .font(.system(size: 8))
+              .foregroundStyle(routerMuted)
+              .lineLimit(1)
+            Spacer(minLength: 6)
+            Text(elapsedLabel(for: request))
               .font(.system(size: 10))
-              .foregroundStyle(.secondary)
-          }
-          Spacer()
-          Picker("", selection: Binding(
-            get: { store.islandMode },
-            set: { store.setIslandMode($0) }
-          )) {
-            ForEach(IslandMode.allCases) { mode in
-              Text(mode.label).tag(mode)
-            }
-          }
-          .pickerStyle(.segmented)
-          .labelsHidden()
-          .frame(width: 168)
-        }
-        .padding(.vertical, 2)
-        settingRow(
-          title: "Use without OpenAI login",
-          detail: store.loginFree
-            ? "External providers · Codex restarts automatically"
-            : "Use connected models and restart Codex",
-          isOn: Binding(
-            get: { store.loginFree },
-            set: { enabled in Task { await store.setLoginFree(enabled) } }
-          ),
-          isDisabled: store.providerOperation != nil
-        )
-        sectionLabel(
-          "Maintenance",
-          detail: store.maintenanceRunning ? "Updating & checking…" : "Update + doctor"
-        )
-        maintenanceRow
-        sectionLabel("Providers", detail: store.providerOperation == nil ? "Auto-saved" : "Applying…")
-        VStack(spacing: 0) {
-          ForEach(providers, id: \.id) { provider in
-            ProviderSetupRow(
-              provider: provider,
-              setup: store.providerSetup[provider.id],
-              account: store.providerUsage(for: provider.id)?.account,
-              isBusy: store.providerOperation == provider.id,
-              controlsDisabled: store.providerOperation != nil,
-              onToggle: { enabled in
-                Task { await store.setProvider(provider.id, enabled: enabled) }
-              },
-              onInstall: { Task { await store.installProviderCLI(provider.id) } },
-              onLogin: { Task { await store.loginProvider(provider.id) } },
-              onSaveKey: { key in Task { await store.saveProviderKey(provider.id, key: key) } }
-            )
-            if provider.id != providers.last?.id {
-              Divider()
-            }
+              .monospacedDigit()
+              .foregroundStyle(routerMuted)
           }
         }
       }
-      .padding(.vertical, 1)
+    }
+
+    if !quotaResets.isEmpty {
+      sectionLabel("Quota resets", detail: "\(quotaResets.count)")
+      VStack(spacing: 5) {
+        ForEach(quotaResets, id: \.id) { entry in
+          HStack {
+            Text(entry.title)
+              .font(.system(size: 10, weight: .medium))
+              .lineLimit(1)
+            Spacer(minLength: 6)
+            Text(usageResetCaption(entry.date))
+              .font(.system(size: 9))
+              .foregroundStyle(routerMuted)
+          }
+        }
+      }
+    }
+  }
+
+  private var quotaResets: [(id: String, title: String, date: Date)] {
+    store.visibleUsageCards.compactMap { card in
+      guard let date = card.resetDate else { return nil }
+      return (id: card.id, title: card.title, date: date)
+    }
+  }
+
+  private var activityDetail: String {
+    guard store.activeRequestCount > 0 else { return "No traffic right now" }
+    let chats = store.activeChatCount
+    let requests = store.activeRequestCount
+    return "\(chats) chat\(chats == 1 ? "" : "s") · \(requests) request\(requests == 1 ? "" : "s") in flight"
+  }
+
+  // `startedAt` arrives as epoch milliseconds from the router health payload.
+  private func elapsedLabel(for request: RouterActiveRequest) -> String {
+    let elapsed = max(0, Date().timeIntervalSince1970 - request.startedAt / 1_000)
+    if elapsed >= 60 {
+      return String(format: "%dm %02ds", Int(elapsed) / 60, Int(elapsed) % 60)
+    }
+    return String(format: "%.1fs", elapsed)
+  }
+
+  private func emptyNotice(_ text: String) -> some View {
+    Text(text)
+      .font(.system(size: 10))
+      .foregroundStyle(routerMuted)
+      .padding(.vertical, 2)
+  }
+
+  @ViewBuilder
+  private func settingsTab(for target: RouterTarget) -> some View {
+    HStack(spacing: 12) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text("Show tray")
+          .font(.system(size: 12, weight: .medium))
+        Text(store.presenceMode == .followCodex
+          ? "Appears with Codex or ChatGPT, hides when they quit"
+          : "Menu bar icon stays visible")
+          .font(.system(size: 10))
+          .foregroundStyle(.secondary)
+      }
+      Spacer()
+      Picker("", selection: Binding(
+        get: { store.presenceMode },
+        set: { store.setPresenceMode($0) }
+      )) {
+        ForEach(TrayPresenceMode.allCases) { mode in
+          Text(mode.label).tag(mode)
+        }
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .frame(width: 168)
+    }
+    .padding(.vertical, 2)
+    HStack(spacing: 12) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text("Dynamic Island")
+          .font(.system(size: 12, weight: .medium))
+        Text(store.islandMode == .desktop
+          ? "Quotas and live activity pinned to the desktop"
+          : "Show provider usage and activity status")
+          .font(.system(size: 10))
+          .foregroundStyle(.secondary)
+      }
+      Spacer()
+      Picker("", selection: Binding(
+        get: { store.islandMode },
+        set: { store.setIslandMode($0) }
+      )) {
+        ForEach(IslandMode.allCases) { mode in
+          Text(mode.label).tag(mode)
+        }
+      }
+      .pickerStyle(.segmented)
+      .labelsHidden()
+      .frame(width: 168)
+    }
+    .padding(.vertical, 2)
+    if store.launchAtLoginAvailable {
+      settingRow(
+        title: "Start at login",
+        detail: store.launchAtLogin
+          ? "Opens automatically after you sign in"
+          : "Relaunch the tray manually after login",
+        isOn: Binding(
+          get: { store.launchAtLogin },
+          set: { store.setLaunchAtLogin($0) }
+        )
+      )
+    }
+    settingRow(
+      title: "Use without OpenAI login",
+      detail: store.loginFree
+        ? "External providers · Codex restarts automatically"
+        : "Use connected models and restart Codex",
+      isOn: Binding(
+        get: { store.loginFree },
+        set: { enabled in Task { await store.setLoginFree(enabled) } }
+      ),
+      isDisabled: store.providerOperation != nil
+    )
+    sectionLabel(
+      "Maintenance",
+      detail: store.maintenanceRunning ? "Updating & checking…" : "Update + doctor"
+    )
+    maintenanceRow
+    sectionLabel("Providers", detail: store.providerOperation == nil ? "Auto-saved" : "Applying…")
+    VStack(spacing: 0) {
+      ForEach(providers, id: \.id) { provider in
+        ProviderSetupRow(
+          provider: provider,
+          setup: store.providerSetup[provider.id],
+          account: store.providerUsage(for: provider.id)?.account,
+          isBusy: store.providerOperation == provider.id,
+          controlsDisabled: store.providerOperation != nil,
+          onToggle: { enabled in
+            Task { await store.setProvider(provider.id, enabled: enabled) }
+          },
+          onInstall: { Task { await store.installProviderCLI(provider.id) } },
+          onLogin: { Task { await store.loginProvider(provider.id) } },
+          onSaveKey: { key in Task { await store.saveProviderKey(provider.id, key: key) } },
+          onRemoveKey: { Task { await store.removeProviderKey(provider.id) } }
+        )
+        if provider.id != providers.last?.id {
+          Divider()
+        }
+      }
     }
   }
 
@@ -1502,9 +1956,14 @@ private struct ProviderSetupRow: View {
   let onInstall: () -> Void
   let onLogin: () -> Void
   let onSaveKey: (String) -> Void
+  let onRemoveKey: () -> Void
 
   @State private var showingKeyField = false
   @State private var apiKey = ""
+  // A sheet or confirmation dialog resigns key and closes the menu bar popover
+  // before it can be answered, so removal is confirmed by arming the button.
+  @State private var removalArmed = false
+  @State private var armGeneration = 0
 
   var body: some View {
     VStack(alignment: .leading, spacing: 9) {
@@ -1514,15 +1973,15 @@ private struct ProviderSetupRow: View {
             .font(.system(size: 12, weight: .medium))
           Text(detail)
             .font(.system(size: 9, weight: .regular))
-            .foregroundStyle(setup?.configured == true ? routerMuted : routerYellow.opacity(0.9))
+            .foregroundStyle(detailTint)
         }
         Spacer()
         actionControl
       }
 
-      if showingKeyField, setup?.action == "add-key" {
+      if showingKeyField, setup?.kind == "api" {
         VStack(alignment: .leading, spacing: 5) {
-          Text("API key")
+          Text(setup?.configured == true ? "Replacement API key" : "API key")
             .font(.system(size: 9, weight: .medium))
             .foregroundStyle(routerMuted)
           HStack(spacing: 7) {
@@ -1547,15 +2006,23 @@ private struct ProviderSetupRow: View {
     }
     .padding(.vertical, 7)
     .animation(.easeOut(duration: 0.18), value: showingKeyField)
+    .animation(.easeOut(duration: 0.15), value: removalArmed)
     .onChange(of: setup?.configured) { configured in
       if configured == true {
         apiKey = ""
         showingKeyField = false
+        disarmRemoval()
       }
     }
   }
 
+  private var detailTint: Color {
+    if removalArmed { return routerRed }
+    return setup?.configured == true ? routerMuted : routerYellow.opacity(0.9)
+  }
+
   private var detail: String {
+    if removalArmed { return "Click the check again to delete this key" }
     guard let setup else { return "Checking setup…" }
     if oauthNeedsReconnect {
       return "Session expired · reconnect for account usage"
@@ -1599,6 +2066,27 @@ private struct ProviderSetupRow: View {
             .disabled(controlsDisabled)
           }
         }
+        if setup?.kind == "api" {
+          Button(action: { toggleKeyField() }) {
+            Image(systemName: showingKeyField ? "xmark" : "pencil")
+              .font(.system(size: 10, weight: .semibold))
+              .frame(width: 20, height: 20)
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(routerAccent)
+          .help(showingKeyField ? "Cancel key replacement" : "Replace API key")
+          .disabled(controlsDisabled)
+
+          Button(action: { tapRemove() }) {
+            Image(systemName: removalArmed ? "checkmark.circle.fill" : "trash")
+              .font(.system(size: removalArmed ? 12 : 10, weight: .semibold))
+              .frame(width: 20, height: 20)
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(removalArmed ? routerRed : routerYellow)
+          .help(removalArmed ? "Click again to delete the stored key" : "Remove stored API key")
+          .disabled(controlsDisabled)
+        }
         Toggle("", isOn: Binding(get: { provider.enabled }, set: onToggle))
           .labelsHidden()
           .toggleStyle(.switch)
@@ -1633,11 +2121,38 @@ private struct ProviderSetupRow: View {
     switch setup?.action {
     case "install": onInstall()
     case "login": onLogin()
-    case "add-key":
-      apiKey = ""
-      showingKeyField.toggle()
+    case "add-key": toggleKeyField()
     default: break
     }
+  }
+
+  private func toggleKeyField() {
+    apiKey = ""
+    disarmRemoval()
+    showingKeyField.toggle()
+  }
+
+  // First click arms, second click deletes. The armed state expires on its own
+  // so a stray click never leaves a live delete button sitting in the row.
+  private func tapRemove() {
+    if removalArmed {
+      disarmRemoval()
+      apiKey = ""
+      showingKeyField = false
+      onRemoveKey()
+      return
+    }
+    removalArmed = true
+    armGeneration += 1
+    let generation = armGeneration
+    DispatchQueue.main.asyncAfter(deadline: .now() + removalArmWindow) {
+      if generation == armGeneration { removalArmed = false }
+    }
+  }
+
+  private func disarmRemoval() {
+    armGeneration += 1
+    removalArmed = false
   }
 }
 
@@ -1838,6 +2353,88 @@ private struct CurrentUsageLimitCard: View {
   private var remainingFraction: CGFloat? {
     guard let remaining = card.remainingPercent else { return nil }
     return CGFloat(max(0, min(100, remaining))) / 100
+  }
+}
+
+private struct ModelUsageBreakdown: View {
+  @ObservedObject var store: RouterStore
+
+  private static let visibleRowLimit = 8
+
+  private var rows: [ModelUsageRow] {
+    Array(store.overallModelUsage.prefix(Self.visibleRowLimit))
+  }
+
+  private var hiddenCount: Int {
+    max(0, store.overallModelUsage.count - rows.count)
+  }
+
+  private var heaviestTokens: Double {
+    Double(rows.map(\.model.totalTokens).max() ?? 0)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      ForEach(rows) { row in
+        VStack(alignment: .leading, spacing: 3) {
+          HStack(spacing: 6) {
+            Text(row.model.displayName)
+              .font(.system(size: 10, weight: .medium))
+              .lineLimit(1)
+            Text(row.providerName)
+              .font(.system(size: 8))
+              .foregroundStyle(routerMuted)
+              .lineLimit(1)
+            Spacer(minLength: 6)
+            Text(primaryLabel(for: row))
+              .font(.system(size: 10, weight: .semibold))
+              .monospacedDigit()
+          }
+
+          GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+              Capsule().fill(Color.primary.opacity(0.09))
+              Capsule()
+                .fill(routerAccent.opacity(0.84))
+                .frame(width: geometry.size.width * fraction(for: row))
+            }
+          }
+          .frame(height: 4)
+
+          Text(detailLabel(for: row))
+            .font(.system(size: 8))
+            .foregroundStyle(routerMuted)
+            .lineLimit(1)
+        }
+      }
+
+      if hiddenCount > 0 {
+        Text("+\(hiddenCount) more model\(hiddenCount == 1 ? "" : "s")")
+          .font(.system(size: 8.5))
+          .foregroundStyle(routerMuted)
+      }
+    }
+  }
+
+  private func fraction(for row: ModelUsageRow) -> Double {
+    guard heaviestTokens > 0 else { return 0 }
+    return min(1, Double(row.model.totalTokens) / heaviestTokens)
+  }
+
+  private func primaryLabel(for row: ModelUsageRow) -> String {
+    guard row.model.totalTokens > 0 else { return "\(row.model.requests) req" }
+    return "\(compactTokenCount(Double(row.model.totalTokens))) tok"
+  }
+
+  private func detailLabel(for row: ModelUsageRow) -> String {
+    // A model with traffic but no metered response carries no token counts;
+    // say so rather than implying it burned nothing.
+    guard row.model.totalTokens > 0 else {
+      return "\(row.model.requests) req · not metered"
+    }
+    let input = compactTokenCount(Double(row.model.inputTokens))
+    let output = compactTokenCount(Double(row.model.outputTokens))
+    return "\(input) in · \(output) out · \(row.model.requests) req"
   }
 }
 

@@ -1,537 +1,193 @@
 # Codex Model Router
 
-Bring OpenRouter, Kimi, Qwen, DeepSeek, MiniMax, Grok, and other API models into
-Codex Desktop without replacing native OpenAI models or your ChatGPT login.
+**Plug every model into Codex Desktop — without losing your ChatGPT subscription.**
 
-It is a local, plug-and-play model layer for people who want combinations such
-as a native GPT model for backend work and Kimi for frontend work, or GPT plus
-Qwen, MiniMax, or DeepSeek for focused subagents.
+Codex Model Router is a local, private gateway that runs on your machine and gives
+the Codex Desktop app (ChatGPT for Mac/Windows) access to dozens of external coding
+models — **DeepSeek, Kimi, Qwen, GLM, MiniMax, Grok and more — including a growing
+set of completely FREE models** — while keeping all your native GPT models (5.6 Sol,
+5.6 Luna, 5.6 Terra …) working with your existing ChatGPT subscription.
 
-## What it solves
+It installs in minutes, runs as a background service on `127.0.0.1` (your keys never
+leave your computer), and its model picker merges your native models with the
+external catalog in one clean list.
 
-- Keeps native OpenAI models and external API models in one Codex picker.
-- Refreshes supported provider catalogs every 15 minutes and after updates.
-- Shows only the newest suitable model from each family in the SOTA view while
-  keeping older models available for compatibility.
-- Lets an authenticated external model run as the main model or as a generated
-  Codex subagent profile.
-- Preserves Codex authentication, MCP servers, skills, project settings, and
-  native model behavior.
-- Reapplies and verifies the integration after Codex Desktop updates.
-- Keeps provider credentials in protected local files and never publishes them.
+> Built on [duolahypercho/codex-router](https://github.com/duolahypercho/codex-router) (MIT).
+> This fork adds **multi-key quota rotation**, **free OpenCode Zen models**, and a
+> duplicate-free model picker.
 
-| Target | Integration | Status |
-| --- | --- | --- |
-| Codex App and CLI | Responses API plus native model-catalog merge | Stable |
-| Cursor | Manual OpenAI-compatible base URL | Experimental |
+---
 
-The targets share a provider registry and translation layer, but keep separate
-ports, state, caller keys, provider selection, services, and app configuration.
-Installing the Cursor target does not edit Codex, and installing Codex does not
-edit Cursor.
+## Why you want this
 
-Codex Router is an independent community project. It is not affiliated with or
-endorsed by OpenAI, Anthropic, Moonshot AI, DeepSeek, OpenRouter, or the
-referenced opencodex project.
+| Problem | Solution |
+|---|---|
+| Codex Desktop only shows OpenAI GPT models | Full external catalog in the native picker |
+| DeepSeek/Kimi/Qwen work great but not in Codex | One-click routing through a local gateway |
+| One opencode subscription runs out of quota mid-task | **Automatic key rotation** across up to 5 keys |
+| Free models exist on OpenCode Zen but nobody wired them up | **8 free models** included and verified |
+| Subagents are OpenAI-only | Per-model agent profiles for every routed model |
+| You don't trust cloud proxies with your keys | 100% local — the router runs on your machine |
 
-## Give the link to your agent
+---
 
-For Codex, paste this into a Codex task:
+## What you get
 
-```text
-Install the Codex target from this public repository:
-https://github.com/DrOetker747/codex-model-router
+- **Native models stay native.** GPT-5.6 Sol / Luna / Terra, GPT-5.5, GPT-5.4 and the
+  rest keep running on your ChatGPT subscription — the router forwards them through
+  your authenticated session, so nothing about your plan changes.
+- **External models in the same picker.** DeepSeek V4 Flash / Pro, Kimi K3, Qwen3.8
+  Max, GLM 5.2, MiniMax M3, Grok 4.5, MiMo, HY3 … routed through your opencode Go
+  subscription or your own API keys (Anthropic, DeepSeek, xAI, z.ai, Qwen, MiniMax,
+  OpenRouter, Groq, Mistral, Cerebras, NVIDIA NIM, Hugging Face, Gemini and more).
+- **FREE models that cost nothing.** Big Pickle, DeepSeek V4 Flash Free, MiMo-V2.5
+  Free, Laguna S 2.1 Free, Ling-3.0-flash Free, LongCat-2.0 Free, North Mini Code
+  Free and Nemotron 3 Ultra Free — served from OpenCode Zen at $0, verified working.
+- **Quota failover (key rotation).** Stored up to 5 API keys per provider. When one
+  subscription hits its limit (401/402/429), the router automatically marks it as
+  exhausted, switches to the next key, retries the request and keeps working. Spent
+  keys cool down for 10 minutes before being retried, and the state survives
+  restarts. No more "quota exceeded" walls in the middle of a task.
+- **One clean picker.** Protocol variants are deduplicated, so you never see the
+  same model twice under different names.
+- **Subagents for every model.** Each routed model gets its own agent profile —
+  spawn a DeepSeek V4 Flash subagent from your native GPT-5.6 parent, for example.
+- **Up-to-date catalog.** `refresh-catalog` pulls the latest native and external
+  model lists, so newly released models appear (and retired ones disappear).
+- **Menu-bar companion (macOS).** Optional tray app shows router status, quota and
+  provider state at a glance.
 
-Follow AGENTS.md. Preserve my existing Codex models, profiles, settings, and
-ChatGPT login. Use only the provider authentication I choose, safely migrate
-only recognized older versions, run the Codex doctor, and leave the final app
-restart to me. Never ask me to paste a token or API key into chat.
+---
+
+## How it works
+
+```
+┌─────────────────┐      ┌──────────────────────────────┐      ┌──────────────────┐
+│  Codex Desktop  │─────▶│  Codex Model Router (local)  │─────▶│  chatgpt.com      │
+│  (model picker) │      │  127.0.0.1:4102              │      │  (native models,  │
+│                 │      │  ┌────────────────────────┐  │      │   your login)     │
+│  native GPT     │      │  │ LiteLLM gateway        │  │      ├──────────────────┤
+│  external       │      │  │ OpenCode Go / Zen      │  │─────▶│  opencode.ai      │
+│  subagents      │      │  │ API forwarders (keys)  │  │      │  (external + FREE)│
+└─────────────────┘      │  │ quota rotation engine  │  │      ├──────────────────┤
+                         │  └────────────────────────┘  │      │  your API keys    │
+                         └──────────────────────────────┘      └──────────────────┘
 ```
 
-If compatible authentication already exists, an agent can finish everything
-except the final app restart. API keys are entered only through a hidden local
-terminal prompt.
+The Codex app sends every request to the local router. Native model requests are
+forwarded to OpenAI with your session (your subscription covers them); external
+requests are translated per model and sent to the right provider with the right key
+— rotating automatically when one subscription is spent.
 
-## Guided install
+---
 
-Codex on macOS or Linux:
+## Installation
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/DrOetker747/codex-model-router/main/install.sh \
-  | sh -s -- --target codex --guided
+### macOS / Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/DrOetker747/codex-model-router/main/install.sh | sh
 ```
 
-Windows PowerShell:
+Follow the prompts, enter your opencode Go API key (or any other provider key), and
+the router takes care of the rest: Node dependencies, the LiteLLM gateway, the
+background service, and the Codex configuration.
+
+### Windows
 
 ```powershell
-$installer = Join-Path $env:TEMP "codex-router-install.ps1"
-Invoke-WebRequest https://raw.githubusercontent.com/DrOetker747/codex-model-router/main/install.ps1 -OutFile $installer
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -Target codex -Guided
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+irm https://raw.githubusercontent.com/DrOetker747/codex-model-router/main/install.ps1 | iex
 ```
 
-The setup selects providers, detects existing authentication, can run the
-official `kimi login`, prompts invisibly for API keys, installs a per-user
-background service, and verifies every local layer. It never makes a paid test
-request unless `--smoke-test` is explicitly selected.
+### From a checkout
 
-Requirements:
-
-- The target app: Codex App/CLI or Cursor.
-- Node.js 22.19 or newer; Node.js 24 LTS is recommended.
-- `uv`, or Python 3.10+ with `venv`.
-- Git for the managed one-command checkout and rollback.
-
-Linux installations support the Codex CLI and the Cursor target's local gateway.
-
-## Models and authentication
-
-| Picker label | Model ID | Authentication |
-| --- | --- | --- |
-| K2.7 Coding Highspeed (OAuth) | `kimi-oauth/kimi-for-coding-highspeed` | Existing Kimi Code CLI OAuth session |
-| K2.7 Coding (OAuth) | `kimi-oauth/kimi-for-coding` | Existing Kimi Code CLI OAuth session |
-| Kimi K3 (OAuth) | `kimi-oauth/k3` | Existing Kimi Code CLI OAuth session |
-| Kimi K3 (API) | `kimi-api/kimi-k3` | Separately billed Kimi Platform API key |
-| Kimi K3 (OpenCode Go) | `opencode-go/kimi-k3` | OpenCode Go API key and subscription |
-| DeepSeek V4 Flash (API) | `deepseek/deepseek-v4-flash` | DeepSeek API key |
-| DeepSeek V4 Pro (API) | `deepseek/deepseek-v4-pro` | DeepSeek API key |
-| Grok 4.5 (OAuth) | `grok-oauth/grok-4.5` | Official Grok CLI OAuth session |
-| Grok 4.5 (API) | `grok-api/grok-4.5` | Separately billed xAI API key |
-| Claude Opus 4.8 (API) | `anthropic-api/claude-opus-4.8` | Separately billed Anthropic API key |
-| GLM-5.2 (Ollama Cloud) | `ollama-cloud/glm-5.2` | Ollama Cloud API key |
-| Kimi K2.7 Code (Ollama Cloud) | `ollama-cloud/kimi-k2.7-code` | Ollama Cloud API key |
-| MiniMax M3 (Ollama Cloud) | `ollama-cloud/minimax-m3` | Ollama Cloud API key |
-| DeepSeek V4 Pro (Ollama Cloud) | `ollama-cloud/deepseek-v4-pro` | Ollama Cloud API key |
-| MiniMax M3 | `minimax-token-plan/minimax-m3` | MiniMax Token Plan API key |
-| Current Qwen Max (Plan) | Discovered from the live provider catalog | Alibaba Model Studio plan API key |
-| Current Qwen Plus (Plan) | Discovered from the live provider catalog | Alibaba Model Studio plan API key |
-| GLM-5.2 (Coding Plan) | `zai-coding/glm-5.2` | Z.ai GLM Coding Plan API key |
-| GLM-5-Turbo (Coding Plan) | `zai-coding/glm-5-turbo` | Z.ai GLM Coding Plan API key |
-
-The Codex catalog is credential-aware. It includes models only from enabled
-external providers with a stored API key or valid OAuth session. Native GPT
-models are included only when `codex login status` confirms an OpenAI login.
-
-Grok OAuth reuses the official CLI credential at `~/.grok/auth.json` and sends
-it only to xAI's documented Grok CLI inference proxy. On that path the router
-also attaches bare hosted `web_search` and `x_search` tools, the same agentic
-surface Grok Build uses. xAI's backend chooses when to search and how to filter
-results; the router does not take search env knobs or request-side filter
-config. Install the official CLI and authenticate before enabling the route:
-
-```sh
-npm install -g @xai-official/grok
-grok login --oauth
+```bash
+git clone https://github.com/DrOetker747/codex-model-router.git
+cd codex-model-router
+./install.sh --guided
 ```
 
-Native GPT models continue to use Codex directly. There is no separate GPT or
-ChatGPT OAuth provider in the router.
+### Requirements
 
-Kimi Code OAuth, Kimi Platform API, and OpenCode Go are separate authentication
-and billing systems. Their Kimi entries intentionally coexist. Older DeepSeek
-aliases remain hidden compatibility routes and are not advertised to new users.
+- macOS / Windows / Linux
+- Node.js 22.19+ (24 LTS recommended)
+- `uv` or Python 3.10+ (for the LiteLLM gateway)
+- Codex Desktop app (ChatGPT app) or the Codex CLI
 
-Enabled providers with model discovery read their live model catalogs during
-installation, every 15 minutes, and on an explicit refresh. Newly published
-models are stored in protected local state and survive source and Codex Desktop
-updates. A failed or malformed provider response keeps the last known good
-catalog instead of emptying the picker. Run an immediate refresh with:
+---
 
-```sh
-./bin/model-router codex update
+## Managing keys
+
+```bash
+# Add up to 5 keys per provider — the router rotates between them automatically
+./bin/provider-key opencode-go set --slot 1     # primary key
+./bin/provider-key opencode-go set --slot 2     # second subscription
+./bin/provider-key opencode-go set --slot 3     # third subscription
+
+# Check what's configured
+./bin/provider-key opencode-go status
+# → opencode Go/Zen key is configured via protected file (...)
+# → Key slots configured: 3 (slot 1, slot 2, slot 3). On quota exhaustion
+#   the router rotates to the next slot.
 ```
 
-The optional `opencode-free` provider uses the same protected OpenCode keys but
-accepts only `big-pickle` and model IDs ending in `-free`. Paid Zen entries are
-rejected before they can enter local state. All Free models and older Go
-fallbacks remain routable while staying hidden from Codex's main picker.
+Keys are stored as protected files (mode 0600) in the router state directory —
+never in this repository, never sent anywhere except the provider you configured.
 
+---
 
+## Updating the model catalog
 
-The Ollama Cloud entries bill through an ollama.com account and can host the
-same model families as other providers under a separate quota. Matching entries
-(for example DeepSeek V4 Pro) intentionally coexist with the vendor-direct
-providers because credentials and billing differ.
-The Qwen entries default to the Alibaba Model Studio Token Plan endpoint in
-the Singapore region. Coding Plan subscribers or other regions can point
-`QWEN_PLAN_BASE_URL` at their dashboard-issued base URL. Plan keys use the
-`sk-sp-` prefix and are separate from pay-as-you-go Model Studio keys; Alibaba
-reserves plan endpoints for interactive coding tools.
-The Z.ai entries use the GLM Coding Plan's dedicated endpoint and its
-subscription API key. That key is not interchangeable with general Z.ai
-platform keys, and Z.ai reserves the coding endpoint for interactive coding
-tools.
-Beyond the built-in models, each API-key provider's live catalog can be
-curated interactively: `./bin/curate-models PROVIDER` lists the models the
-provider currently advertises that are not in the registry, lets you toggle
-the ones you want, and stores them as user models with conservative default
-metadata in protected state (surviving updates, editable in place, and
-removable by re-running the command and deselecting). Curated models are
-local to your machine and are not vetted by the repository's compatibility
-tests.
-
-### Catalog-only providers
-
-These OpenAI-compatible providers are registered for routing and credential
-isolation but ship no preselected models, because their catalogs change too
-often for the repository to pin and live-verify individual entries:
-
-| Provider | Provider ID | Base URL |
-| --- | --- | --- |
-| Groq | `groq` | `https://api.groq.com/openai/v1` |
-| OpenRouter | `openrouter` | `https://openrouter.ai/api/v1` |
-| Together AI | `together` | `https://api.together.xyz/v1` |
-| Fireworks AI | `fireworks` | `https://api.fireworks.ai/inference/v1` |
-| Cerebras | `cerebras` | `https://api.cerebras.ai/v1` |
-| Mistral AI | `mistral` | `https://api.mistral.ai/v1` |
-| NVIDIA NIM | `nvidia-nim` | `https://integrate.api.nvidia.com/v1` |
-| SiliconFlow | `siliconflow` | `https://api.siliconflow.cn/v1` |
-| Hugging Face Router | `huggingface` | `https://router.huggingface.co/v1` |
-| Google Gemini API | `gemini-api` | `https://generativelanguage.googleapis.com/v1beta/openai` |
-
-Add a key, then pick the models you want from the provider's live catalog:
-
-```sh
-./bin/model-router codex provider-key groq set
-./bin/curate-models groq
+```bash
+./bin/refresh-catalog
 ```
 
-Curated entries carry conservative default metadata and are local to your
-machine. Verify a model before relying on it:
+Fetches the latest native and external model lists, merges them, and refreshes the
+per-model subagent profiles. Newly released models appear after you fully quit and
+reopen Codex.
 
-```sh
-./bin/test-model 'groq/MODEL_ID' --live --yes
-```
+---
 
-Each base URL is overridable through the provider's `baseUrlEnv` variable, so a
-regional endpoint or a self-hosted gateway can reuse the same provider entry.
+## Daily workflow
 
-Quota cards work for these providers without any extra configuration. Most
-OpenAI-compatible services report the caller's remaining window on every
-response through `x-ratelimit-*` headers, and Anthropic reports the same facts
-under an `anthropic-ratelimit-*` prefix. The router reads those headers as
-traffic passes through, so a provider starts showing real request and token
-limits after its first request — no balance endpoint, no extra API call, and no
-separate credential. Providers that publish no such headers, including Google
-Gemini, keep showing router traffic only.
-Gemini is routed through Google's OpenAI-compatible surface rather than the
-native Gemini protocol, so it shares the existing forwarder and needs no
-separate adapter.
+1. Pick **GPT-5.6 Sol** for architecture work (your subscription).
+2. Hand visual/frontend tasks to **Kimi K3** or **Qwen3.8 Max**.
+3. Use **DeepSeek V4 Flash** as a fast subagent for bounded tasks.
+4. Let a **free model** (e.g. North Mini Code Free) handle trivial chores — at $0.
+5. When a key runs out of quota, the router silently rotates to the next one.
 
-Only enabled providers appear in an app's picker. Each target has its own
-selection and API-key files:
+---
 
-```sh
-./bin/model-router codex providers
-./bin/model-router cursor providers
-./bin/model-router cursor providers enable deepseek
-./bin/model-router cursor provider-key deepseek set
-./bin/model-router codex provider-key anthropic-api set
-./bin/model-router codex provider-key opencode-go set-backup
-```
+## Security & privacy
 
-On Windows, use `./model-router.ps1` with the same target and command.
+- The router listens only on `127.0.0.1` — no cloud proxy, no telemetry.
+- API keys live in protected local files / macOS Keychain; nothing is committed to
+  this repository.
+- Native traffic flows through your own ChatGPT session; external traffic goes
+  directly to the provider you chose.
+- Free OpenCode Zen models may use submitted data to improve models (North Mini,
+  Nemotron, Big Pickle, DeepSeek Free and friends) — don't send confidential data
+  through the free tier.
 
-The API-key prompt disables terminal echo. Protected files use mode `600` on
-POSIX and an inheritance-disabled, current-user ACL on Windows. Diagnostics
-report credential presence and source, never the value.
-Providers with an explicit backup key slot retry that key only after HTTP 401
-or 403. They never rotate keys for quota or rate-limit responses.
+---
 
-## Make models appear in Codex
+## Roadmap
 
-After setup:
+- [x] Native + external merged model picker
+- [x] Per-model subagent profiles
+- [x] Multi-key quota rotation with automatic failover
+- [x] Free OpenCode Zen models
+- [x] Duplicate-free catalog
+- [ ] Claude Code CLI adapter (bring the same models to Claude Code)
+- [ ] Usage dashboards per key slot
+- [ ] One-click model migration prompts on catalog refresh
 
-1. Run `./bin/model-router codex doctor` and resolve any `FAIL` line.
-2. Confirm `providers` says `SHOW` and `ready` for the intended provider.
-3. Fully quit Codex, reopen it, and create a new task.
-4. Open the normal model picker.
+---
 
-Codex loads `model_catalog_json` only at app startup. If models are still
-missing, run `./bin/refresh-catalog`, fully quit Codex, and reopen it.
+## License
 
-Selecting an authenticated external model also prepares its managed Codex
-subagent profile. SOTA-visible external models are prepared automatically;
-hidden compatible models can be enabled explicitly with:
-
-```sh
-./bin/control agent-profile-set 'openrouter/PROVIDER/MODEL' on
-```
-
-Generated profiles are marked `catalog-only` until a separate meaningful-text
-and tool-call test verifies that exact route. The integration preserves the built-in OpenAI provider, native GPT models,
-ChatGPT sign-in, profiles, MCP settings, project trust, and reasoning defaults.
-It adds one marked root block and one inert custom-provider table to the user's
-Codex config:
-
-```toml
-# BEGIN codex-router-managed
-openai_base_url = "http://127.0.0.1:4102/_codex-router/<generated-capability>/v1"
-model_catalog_json = "/absolute/path/to/.codex/codex-router/merged-models.json"
-# END codex-router-managed
-
-# BEGIN codex-router-provider-managed
-[model_providers.codex-router]
-name = "Codex Router (external models)"
-base_url = "http://127.0.0.1:4102/_codex-router/<generated-capability>/v1"
-wire_api = "responses"
-# END codex-router-provider-managed
-```
-
-The generated path is local caller authentication. Do not paste the complete
-managed URL into an issue.
-
-### Windows Codex Desktop running through WSL
-
-When Codex Desktop runs on Windows while commands are executed through WSL,
-there may be two different Codex home directories:
-
-```text
-C:\Users\<WindowsUser>\.codex
-```
-
-and:
-
-```text
-/home/<LinuxUser>/.codex
-```
-
-Router commands use the Codex home selected by `CODEX_HOME`. Running them inside
-WSL without overriding that variable may update the Linux CLI configuration
-instead of the configuration used by Windows Codex Desktop.
-
-To target the Windows Desktop configuration from WSL:
-
-```sh
-export CODEX_HOME=/mnt/c/Users/<WindowsUser>/.codex
-export CODEX_ROUTER_STATE_DIR="$CODEX_HOME/codex-router"
-```
-
-Then run the router command normally. For example, to return to authenticated
-mode with native GPT models and enabled external providers in the merged
-catalog:
-
-```sh
-./bin/control auth-mode off
-```
-
-Verify that the Windows `config.toml` uses a path that the WSL runtime can read:
-
-```toml
-model_catalog_json = "/mnt/c/Users/<WindowsUser>/.codex/codex-router/merged-models.json"
-```
-
-When the Codex runtime is executing inside WSL, a Windows-style path such as
-`C:\Users\...` is not readable as a Linux filesystem path. Use the corresponding
-`/mnt/c/...` path instead.
-
-If setup appears successful but the Desktop model picker does not change, check
-which Codex home was modified before rerunning setup.
-
-### Use Codex without an OpenAI login
-
-The tray's **Use without OpenAI login** switch selects the managed custom
-provider for new Codex sessions. In that mode, enabled external models use the
-OAuth session or API key configured for their provider and do not require a
-ChatGPT or OpenAI API login. Connect and enable at least one external provider
-before turning it on. On macOS, the tray gracefully quits and reopens the
-registered Codex desktop app after the mode changes; if that restart fails, the
-tray reports that Codex must be restarted manually. The switch keeps the current
-model when it already belongs to a connected external provider; otherwise it
-selects the first enabled model from one of those providers.
-
-While the switch is on, model selection happens in Codex's own picker: the
-catalog republishes external models with their real names, so switching models
-needs no extra tray UI. `./bin/control model-set <model-slug>` switches the
-active model from the command line; it accepts canonical external slugs and
-writes the aliased native slug so pickers highlight the selection.
-
-Login-free catalogs republish external models under the native GPT slugs
-(with the external model's own name and reasoning levels), because some Codex
-surfaces — notably the ChatGPT desktop app's model menu — only display models
-whose slugs pass a server-delivered allowlist of native slugs. The router
-records the mapping in `native-aliases.json` and dispatches those slugs to the
-mapped external provider. Models beyond the available native slots stay listed
-under their own slugs, and signing back in restores the native catalog
-untouched.
-
-Turning the switch off restores the exact root `model` and `model_provider`
-values that were present before the mode was enabled. The router does not
-modify or delete ChatGPT credentials. Native GPT models, ChatGPT usage, cloud
-tasks, and other account-backed features still require OpenAI authentication
-and are not available while signed out. The equivalent local control command is
-`./bin/control auth-mode on` or `./bin/control auth-mode off`; when using the
-command directly, restart Codex yourself.
-
-## macOS tray control panel
-
-On macOS, build and open the native menu-bar control panel with:
-
-```sh
-./bin/model-router-tray
-```
-
-It shows Codex health, detailed usage for the active provider, a seven-day
-overview of every configured or previously used provider, and auto-applied
-provider controls in a native glass macOS interface. See the
-[macOS tray guide](docs/MACOS-TRAY.md) for behavior and rebuild notes.
-
-For a focused model selector in the menu bar, run:
-
-```sh
-./bin/model-picker
-```
-
-It provides searchable **SOTA**, **OpenCode Go**, and strictly **Free** tabs.
-Selecting a row always asks whether to save it for the next task or gracefully
-restart Codex. The current task is never changed. Favorites stay on this Mac,
-and catalog updates appear after refresh without rebuilding the app. Provider
-settings accept API keys through a secure field and show models in SOTA only
-after that provider is both authenticated and enabled.
-
-The app also places a Dynamic-Island-style overlay at the top center of the
-active display. It follows the provider handling the latest request, reveals
-usage on hover, and expands on click. The menu-bar panel remains available for
-the all-provider overview and configuration.
-
-## Windows and Linux tray control panel
-
-Windows and Linux use the shared Tauri tray companion in `apps/desktop`. It
-provides the same connected-provider filtering, normalized quota cards, daily
-token graph, secure provider setup, and animated activity status as the macOS
-surface.
-
-```sh
-# Linux
-./bin/model-router-tray
-```
-
-```powershell
-# Windows PowerShell
-.\scripts\build-desktop-tray.ps1 -BinaryOnly
-Start-Process .\apps\desktop\src-tauri\target\release\codex-router-desktop.exe
-```
-
-Windows and Linux on X11 receive the floating top-center activity pill. Linux
-on Wayland uses the tray panel without the pill because the compositor owns
-absolute window placement. See the
-[Windows and Linux tray guide](docs/DESKTOP-TRAY.md) for prerequisites,
-packaging, and the platform behavior matrix.
-
-## Common commands
-
-```sh
-./bin/model-router codex setup --guided
-./bin/model-router cursor setup --guided
-./bin/model-router cursor doctor
-./bin/model-router cursor status
-./bin/model-router cursor disable
-./bin/model-router cursor enable
-./bin/model-router cursor uninstall
-```
-
-The optional live check makes one small request per selected provider and may
-consume paid quota:
-
-```sh
-./bin/model-router codex smoke-test --yes
-```
-
-`disable` removes only the selected app integration and its current service.
-`uninstall` intentionally retains the checkout, logs, backups, internal keys,
-and provider credentials so routine removal cannot destroy authentication or
-recovery data.
-
-## Updates and rollback
-
-For a managed Git checkout:
-
-```sh
-./bin/model-router codex update
-./bin/model-router cursor update
-./bin/model-router cursor rollback
-```
-
-Updates require a clean `main` checkout and a recognized repository origin.
-The previous revision is retained as a local rollback ref, and a failed install
-restores the previous source revision. A clean local provider extension is
-rebased onto a newer upstream revision; a conflict stops safely before install
-and leaves the previous source active. If you already ran `git pull` manually,
-run the update command anyway; it applies the pulled revision when the install
-manifest is older. If both targets are installed, run each
-target's `doctor --fix` after an update or rollback so both generated configs
-and services match the shared source revision.
-
-Tagged releases contain `.tar.gz` and `.zip` source archives, SHA-256 checksums,
-and GitHub build-provenance attestations.
-
-## How routing works
-
-```mermaid
-flowchart LR
-  C["Codex Responses :4102"] --> L1["LiteLLM :4100"]
-  U["Cursor Chat Completions :4104"] --> L2["LiteLLM :4105"]
-  L1 --> K1["Kimi OAuth :4101"]
-  L1 --> A1["API keys :4103"]
-  L2 --> K2["Kimi OAuth :4106"]
-  L2 --> A2["API keys :4107"]
-  K1 --> P["External providers"]
-  A1 --> P
-  K2 --> P
-  A2 --> P
-```
-
-Codex sends the Responses API; Cursor sends OpenAI-compatible Chat Completions.
-LiteLLM translates either contract to each provider's native protocol,
-including OpenAI-compatible Chat Completions and Anthropic Messages, with
-streaming and tool-call shapes preserved. Every listener binds to `127.0.0.1`.
-
-Both frontends authenticate the caller before reading model traffic. They pass
-only a different random internal key to LiteLLM. The final forwarder discards
-that key and injects only the selected provider credential. Browser-originated
-requests are rejected, secrets are never exposed by public health routes, and
-network-facing errors are sanitized.
-
-The host app still owns the agent loop, tools, permissions, files, plugins,
-skills, MCP servers, and conversation state. The router handles model inference
-and protocol translation; it cannot add a capability the selected model or
-provider does not implement.
-
-## Add future providers and models
-
-[`config/providers.json`](config/providers.json) is the validated registry for
-provider metadata, picker entries, upstream IDs, API protocols, context limits, request
-profiles, modalities, and credential sources. Tested OpenAI-compatible and
-Anthropic API providers share one credential-isolating forwarder and become
-available to every implemented app target after compatibility tests pass.
-
-Discovery does not publish every upstream model blindly:
-
-```sh
-./bin/discover-models deepseek
-./bin/test-model 'deepseek/deepseek-v4-pro' --live --yes
-```
-
-New models should remain unlisted until official capabilities and live text,
-streaming, image-input, tool-call, and context behavior are verified for each
-target. See [Development](docs/DEVELOPMENT.md) for the registry contract.
-
-## Documentation
-
-- [Installation, migration, and upgrades](docs/INSTALL.md)
-- [Cursor target](docs/CURSOR.md)
-- [Compatible apps: T3 Code and opencode](docs/COMPATIBLE-APPS.md)
-- [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Architecture and request flow](docs/HOW-IT-WORKS.md)
-- [Security and credential handling](SECURITY.md)
-- [Provider development and tests](docs/DEVELOPMENT.md)
-- [Changelog](CHANGELOG.md)
-
-References: [Kimi Code CLI OAuth](https://www.kimi.com/help/kimi-code/cli-getting-started),
-[Kimi K3 API](https://platform.kimi.com/docs/guide/kimi-k3-quickstart),
-[DeepSeek model API](https://api-docs.deepseek.com/api/list-models),
-[Anthropic models](https://platform.claude.com/docs/en/about-claude/models/overview),
-[Anthropic Messages API](https://platform.claude.com/docs/en/api/messages),
-[Codex advanced configuration](https://learn.chatgpt.com/docs/config-file/config-advanced),
-and [opencodex](https://github.com/lidge-jun/opencodex).
-
-MIT licensed. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
+MIT — see [LICENSE](LICENSE). Based on
+[duolahypercho/codex-router](https://github.com/duolahypercho/codex-router) (MIT),
+which does the heavy lifting; this fork layers on key rotation, free models and
+picker polish.

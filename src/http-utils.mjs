@@ -72,10 +72,24 @@ export async function pipeResponse(upstream, response, denylist, transform) {
   }
   await new Promise((resolve, reject) => {
     const stream = Readable.fromWeb(upstream.body);
-    stream.once("error", reject);
-    if (transform) transform.once("error", reject);
-    response.once("finish", resolve);
-    response.once("error", reject);
+    let settled = false;
+    const settle = (error) => {
+      if (settled) return;
+      settled = true;
+      if (error) reject(error);
+      else resolve();
+    };
+    stream.once("error", settle);
+    if (transform) transform.once("error", settle);
+    response.once("finish", () => settle());
+    response.once("error", settle);
+    // A client that disconnects mid-stream emits "close" without "finish" or
+    // "error". Without this the promise never settles, so the caller's finally
+    // block never runs and the request stays counted as in-flight forever.
+    response.once("close", () => {
+      if (!settled) stream.destroy();
+      settle();
+    });
     if (transform) stream.pipe(transform).pipe(response);
     else stream.pipe(response);
   });

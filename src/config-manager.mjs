@@ -1,13 +1,19 @@
+import { spawnSync } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import os from "node:os";
 import path from "node:path";
+
+import { codexSpawnTarget, findCodexBinary } from "./codex-binary.mjs";
 
 import {
   assertCallerSecret,
@@ -29,16 +35,16 @@ import {
   PORTS,
   loopback,
 } from "./paths.mjs";
-import {
-  externalAgentRegistrationBlock,
-  removeExternalAgentRegistrationBlock,
-} from "./codex-agent-registration.mjs";
 
 const legacyRouterBaseUrl = loopback(PORTS.router, "/v1");
 const startMarker = "# BEGIN codex-router-managed";
 const endMarker = "# END codex-router-managed";
 const providerStartMarker = "# BEGIN codex-router-provider-managed";
 const providerEndMarker = "# END codex-router-provider-managed";
+const agentConcurrencyStartMarker = "# BEGIN codex-router-agent-concurrency-managed";
+const agentConcurrencyEndMarker = "# END codex-router-agent-concurrency-managed";
+const createdAgentsTableMarker = "# codex-router-created-agents-table";
+const managedAgentMaxConcurrency = 6;
 const routerProviderId = "codex-router";
 const defaultChatgptBaseUrl = "https://chatgpt.com/backend-api";
 const defaultRealtimeWebsocketBaseUrl = "https://api.openai.com/v1";
@@ -47,6 +53,7 @@ const realtimeWebsocketBaseUrlKey = "experimental_realtime_ws_base_url";
 const markerPairs = [
   [startMarker, endMarker],
   [providerStartMarker, providerEndMarker],
+  [agentConcurrencyStartMarker, agentConcurrencyEndMarker],
   ["# BEGIN kimi-codex-router-managed", "# END kimi-codex-router-managed"],
   ["# BEGIN kimi-codex-proxy-managed", "# END kimi-codex-proxy-managed"],
 ];
@@ -85,15 +92,159 @@ function isRecognizedRouterBaseUrl(value) {
   }
 }
 
+function removeMarkerPair(input, start, end) {
+  const escapedStart = start.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escapedEnd = end.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return input.replace(
+    new RegExp(`(?:^|\\n)${escapedStart}\\n[\\s\\S]*?\\n${escapedEnd}(?:\\n|$)`, "g"),
+    "\n",
+  );
+}
+
 function removeMarkedBlock(input) {
-  return markerPairs.reduce((contents, [start, end]) => {
-    const escapedStart = start.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const escapedEnd = end.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return contents.replace(
-      new RegExp(`(?:^|\\n)${escapedStart}\\n[\\s\\S]*?\\n${escapedEnd}(?:\\n|$)`, "g"),
-      "\n",
+  return markerPairs.reduce(
+    (contents, [start, end]) => removeMarkerPair(contents, start, end),
+    input,
+  );
+}
+
+function removeCreatedAgentsTableIfEmpty(input) {
+  const lines = input.split("\n");
+  const markerIndex = lines.findIndex(
+    (line) => line.trim() === createdAgentsTableMarker,
+  );
+  if (markerIndex === -1) return input;
+
+  let headerIndex = markerIndex + 1;
+  while (headerIndex < lines.length && !lines[headerIndex].trim()) headerIndex += 1;
+  if (!/^\s*\[\s*agents\s*\]\s*(?:#.*)?$/.test(lines[headerIndex] || "")) {
+    lines.splice(markerIndex, 1);
+    return lines.join("\n");
+  }
+
+  let tableEnd = headerIndex + 1;
+  while (tableEnd < lines.length && !/^\s*\[/.test(lines[tableEnd])) tableEnd += 1;
+  const hasUserValues = lines
+    .slice(headerIndex + 1, tableEnd)
+    .some((line) => line.trim() && !line.trim().startsWith("#"));
+  if (hasUserValues) {
+    lines.splice(markerIndex, 1);
+  } else {
+    lines.splice(headerIndex, 1);
+    lines.splice(markerIndex, 1);
+  }
+  return lines.join("\n");
+}
+
+function withoutManagedAgentConcurrency(input) {
+  return removeCreatedAgentsTableIfEmpty(
+    removeMarkerPair(input, agentConcurrencyStartMarker, agentConcurrencyEndMarker),
+  );
+}
+
+function hasModernMultiAgentConfig(input) {
+  const lines = input.split("\n");
+  if (lines.some((line) => /^\s*features\.multi_agent_v2\s*=/.test(line))) return true;
+  if (lines.some((line) => /^\s*\[agents\.[^\]]+\]\s*(?:#.*)?$/.test(line))) return true;
+  const featuresHeader = lines.findIndex((line) =>
+    /^\s*\[features\]\s*(?:#.*)?$/.test(line),
+  );
+  if (featuresHeader === -1) return false;
+  let tableEnd = featuresHeader + 1;
+  while (tableEnd < lines.length && !/^\s*\[/.test(lines[tableEnd])) tableEnd += 1;
+  return lines
+    .slice(featuresHeader + 1, tableEnd)
+    .some((line) => /^\s*multi_agent_v2\s*=/.test(line));
+}
+
+// Some Codex builds parse `[agents]` as a pure role map and reject the
+// concurrency scalar outright, which blocks the whole config from loading
+// (observed on 0.141-0.145; earlier and later builds accept it). A version
+// table would need constant maintenance, so ask the installed binary instead:
+// have it load a config containing only the scalar and see whether it parses.
+// The probe config is minimal on purpose — the answer must not depend on
+// anything else in the user's config.
+let codexAcceptsAgentConcurrencyScalar;
+function installedCodexAcceptsAgentConcurrencyScalar() {
+  if (codexAcceptsAgentConcurrencyScalar !== undefined) {
+    return codexAcceptsAgentConcurrencyScalar;
+  }
+  codexAcceptsAgentConcurrencyScalar = probeAgentConcurrencyScalar();
+  return codexAcceptsAgentConcurrencyScalar;
+}
+
+function probeAgentConcurrencyScalar() {
+  const binary = findCodexBinary();
+  // With no binary to ask, keep the historical behavior of writing the scalar.
+  if (!binary) return true;
+  const probeHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-schema-probe-"));
+  try {
+    writeFileSync(
+      path.join(probeHome, "config.toml"),
+      `[agents]\nmax_concurrent_threads_per_session = ${managedAgentMaxConcurrency}\n`,
+      { encoding: "utf8", mode: 0o600 },
     );
-  }, input);
+    const { command: probeCommand, options } = codexSpawnTarget(binary);
+    // `login status` exits non-zero when signed out, so the exit code says
+    // nothing about the config; only the load-error message does.
+    const result = spawnSync(probeCommand, ["login", "status"], {
+      ...options,
+      encoding: "utf8",
+      timeout: 10_000,
+      env: { ...process.env, CODEX_HOME: probeHome },
+    });
+    if (result.error) return true;
+    return !/Error loading configuration/i.test(
+      `${result.stdout || ""}\n${result.stderr || ""}`,
+    );
+  } catch {
+    return true;
+  } finally {
+    rmSync(probeHome, { recursive: true, force: true });
+  }
+}
+
+function withManagedAgentConcurrency(input) {
+  const cleaned = withoutManagedAgentConcurrency(input);
+  if (hasModernMultiAgentConfig(cleaned)) return cleaned;
+  const { rootLines } = splitRoot(cleaned);
+  if (
+    rootLines.some((line) =>
+      /^\s*agents(?:\.(?:max_concurrent_threads_per_session|max_threads))?\s*=/.test(
+        line,
+      ),
+    )
+  ) {
+    return cleaned;
+  }
+
+  const lines = cleaned.split("\n");
+  const agentsHeader = lines.findIndex((line) =>
+    /^\s*\[\s*agents\s*\]\s*(?:#.*)?$/.test(line),
+  );
+  if (agentsHeader !== -1) {
+    let tableEnd = agentsHeader + 1;
+    while (tableEnd < lines.length && !/^\s*\[/.test(lines[tableEnd])) tableEnd += 1;
+    const userConfigured = lines
+      .slice(agentsHeader + 1, tableEnd)
+      .some((line) =>
+        /^\s*(?:max_concurrent_threads_per_session|max_threads)\s*=/.test(line),
+      );
+    if (userConfigured) return cleaned;
+  }
+  if (!installedCodexAcceptsAgentConcurrencyScalar()) return cleaned;
+  const managedLines = [
+    agentConcurrencyStartMarker,
+    `max_concurrent_threads_per_session = ${managedAgentMaxConcurrency}`,
+    agentConcurrencyEndMarker,
+  ];
+  if (agentsHeader !== -1) {
+    lines.splice(agentsHeader + 1, 0, ...managedLines);
+  } else {
+    while (lines.length && !lines.at(-1).trim()) lines.pop();
+    lines.push("", createdAgentsTableMarker, "[agents]", ...managedLines);
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
 }
 
 function splitRoot(input) {
@@ -145,23 +296,16 @@ function nativeRealtimeCallBaseUrl(lines) {
 
 function replaceRootValue(contents, key, value) {
   const { rootLines, tableLines } = splitRoot(contents);
-  const assignment = new RegExp(`^\\s*${key}\\s*=`);
-  const existing = rootLines.findIndex((line) => assignment.test(line));
-  const filtered = rootLines.filter((line, index) => !assignment.test(line) || index === existing);
+  const filtered = rootLines.filter(
+    (line) => !new RegExp(`^\\s*${key}\\s*=`).test(line),
+  );
   if (value !== undefined) {
-    if (existing === -1) {
-      const managedBlock = filtered.findIndex((line) => line.trim() === startMarker);
-      filtered.splice(
-        managedBlock === -1 ? filtered.length : managedBlock,
-        0,
-        `${key} = ${JSON.stringify(value)}`,
-      );
-    } else {
-      filtered[filtered.findIndex((line) => assignment.test(line))] =
-        `${key} = ${JSON.stringify(value)}`;
-    }
-  } else if (existing !== -1) {
-    filtered.splice(filtered.findIndex((line) => assignment.test(line)), 1);
+    const managedBlock = filtered.findIndex((line) => line.trim() === startMarker);
+    filtered.splice(
+      managedBlock === -1 ? filtered.length : managedBlock,
+      0,
+      `${key} = ${JSON.stringify(value)}`,
+    );
   }
   return [...trimBlankEdges(filtered), "", ...trimBlankEdges(tableLines)]
     .join("\n")
@@ -235,7 +379,7 @@ function legacyManagedRouterProvider(contents) {
   const fields = new Map();
   for (const line of lines.slice(start + 1, end)) {
     const trimmed = line.trim();
-    if (!trimmed) continue;
+    if (!trimmed || trimmed === createdAgentsTableMarker) continue;
     const match = trimmed.match(/^([A-Za-z0-9_-]+)\s*=/);
     if (!match || fields.has(match[1])) return undefined;
     fields.set(match[1], assignmentValue(trimmed));
@@ -274,7 +418,7 @@ function clean(contents) {
   const knownManaged =
     markerPairs.some(([start]) => contents.includes(start)) ||
     knownCatalogPaths.some((catalogPath) => contents.includes(catalogPath));
-  const withoutBlock = removeMarkedBlock(contents);
+  const withoutBlock = removeCreatedAgentsTableIfEmpty(removeMarkedBlock(contents));
   const { rootLines, tableLines } = splitRoot(withoutBlock);
   const filtered = rootLines.filter((line) => {
     if (/^\s*openai_base_url\s*=/.test(line)) {
@@ -372,7 +516,7 @@ function enabledContents(contents) {
     'wire_api = "responses"',
     providerEndMarker,
   ];
-  return `${next.join("\n").trimEnd()}\n`;
+  return withManagedAgentConcurrency(`${next.join("\n").trimEnd()}\n`);
 }
 
 function atomicWrite(contents) {
@@ -389,29 +533,23 @@ function atomicWrite(contents) {
   }
 }
 
-if (!new Set(["enable", "disable", "status", "model-set", "login-free-enable", "login-free-disable"]).has(command)) {
+if (!new Set(["enable", "disable", "status", "login-free-enable", "login-free-disable"]).has(command)) {
   console.error(
-    "Usage: config-manager.mjs enable|disable|status|model-set MODEL|login-free-enable|login-free-disable",
+    "Usage: config-manager.mjs enable|disable|status|login-free-enable|login-free-disable",
   );
   process.exit(2);
 }
 
-const rawCurrent = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : "";
+const current = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : "";
 if (command === "status") {
-  process.stdout.write(`${JSON.stringify(snapshot(rawCurrent))}\n`);
+  process.stdout.write(`${JSON.stringify(snapshot(current))}\n`);
   process.exit(0);
 }
-const agentRegistrationBlock = externalAgentRegistrationBlock(rawCurrent);
-const current = removeExternalAgentRegistrationBlock(rawCurrent);
 
 let next;
 let pendingProviderModeState;
 if (command === "enable") {
   next = enabledContents(current);
-} else if (command === "model-set") {
-  const model = String(process.argv[3] || "").trim();
-  if (!model) throw new Error("A model slug is required.");
-  next = `${replaceRootValue(current, "model", model)}\n`;
 } else if (command === "login-free-enable") {
   const enabled = enabledContents(current);
   const { rootLines } = splitRoot(current);
@@ -467,13 +605,7 @@ if (command === "enable") {
       "",
       ...trimBlankEdges(cleaned.tableLines),
     ].join("\n").trimEnd()}\n`;
-    if (command === "disable") {
-      next = `${removeExternalAgentRegistrationBlock(next)}\n`;
-    }
   }
-}
-if (command !== "disable" && agentRegistrationBlock) {
-  next = `${next.trimEnd()}\n\n${agentRegistrationBlock}\n`;
 }
 if (existsSync(CONFIG_PATH) && !existsSync(BACKUP_PATH)) {
   copyFileSync(CONFIG_PATH, BACKUP_PATH);

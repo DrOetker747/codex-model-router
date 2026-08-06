@@ -19,11 +19,33 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const manager = path.join(root, "src", "config-manager.mjs");
 const CALLER_KEY = "test-config-caller-capability-with-sufficient-length";
 
+// The config manager probes the installed Codex binary to learn whether its
+// schema accepts the managed [agents] concurrency scalar. Point it at stubs so
+// the tests do not depend on whichever Codex build this machine has. Windows
+// cannot execute shebang scripts, so the stubs are batch files there — the
+// same .cmd shape codexSpawnTarget already handles for npm-installed Codex.
+const codexStubDir = mkdtempSync(path.join(os.tmpdir(), "codex-router-codex-stub-"));
+function writeCodexStub(name, message) {
+  const isWindows = process.platform === "win32";
+  const file = path.join(codexStubDir, isWindows ? `${name}.cmd` : name);
+  const contents = isWindows
+    ? `@echo ${message} 1>&2\r\n@exit /b 1\r\n`
+    : `#!/bin/sh\necho '${message}' >&2\nexit 1\n`;
+  writeFileSync(file, contents, { mode: 0o755 });
+  return file;
+}
+const scalarAcceptingCodex = writeCodexStub("codex-accepts-scalar", "Not logged in");
+const scalarRejectingCodex = writeCodexStub(
+  "codex-rejects-scalar",
+  "Error loading configuration: invalid type: integer, expected struct AgentRoleToml",
+);
+
 function run(
   command,
   codexHome,
   stateDir = path.join(codexHome, "router-state"),
   commandArgs = [],
+  env = {},
 ) {
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   const callerSecretPath = path.join(stateDir, "caller-secret");
@@ -36,9 +58,11 @@ function run(
       encoding: "utf8",
       env: {
         ...process.env,
+        CODEX_BIN: scalarAcceptingCodex,
         CODEX_HOME: codexHome,
         CODEX_ROUTER_STATE_DIR: stateDir,
         CODEX_ROUTER_PORT: "46192",
+        ...env,
       },
     }),
   );
@@ -72,6 +96,9 @@ approval_policy = "never"
     const configured = readFileSync(configPath, "utf8");
     assert.match(configured, /# BEGIN codex-router-managed/);
     assert.match(configured, /# BEGIN codex-router-provider-managed/);
+    assert.match(configured, /# BEGIN codex-router-agent-concurrency-managed/);
+    assert.match(configured, /\[agents\]/);
+    assert.match(configured, /max_concurrent_threads_per_session = 6/);
     assert.match(configured, /\[model_providers\.codex-router\]/);
     assert.match(configured, /wire_api = "responses"/);
     assert.ok(
@@ -114,12 +141,133 @@ approval_policy = "never"
     const restored = readFileSync(configPath, "utf8");
     assert.doesNotMatch(
       restored,
-      /codex-router-(?:provider-)?managed|openai_base_url|model_catalog_json|experimental_realtime_(?:webrtc_call|ws)_base_url/,
+      /codex-router-(?:(?:provider|agent-concurrency)-)?managed|codex-router-created-agents-table|openai_base_url|model_catalog_json|experimental_realtime_(?:webrtc_call|ws)_base_url/,
     );
+    assert.doesNotMatch(restored, /\[agents\]|max_concurrent_threads_per_session/);
     assert.match(restored, /model = "gpt-5\.6-sol"/);
     assert.match(restored, /model_provider = "openai"/);
     assert.match(restored, /model_reasoning_effort = "xhigh"/);
     assert.match(restored, /\[profiles\.work\]/);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("config manager preserves a user-owned agent concurrency limit", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-agent-limit-"));
+  const configPath = path.join(codexHome, "config.toml");
+  const original = `[agents]
+max_concurrent_threads_per_session = 3
+default_subagent_model = "gpt-5.6-terra"
+`;
+  writeFileSync(configPath, original, { mode: 0o600 });
+
+  try {
+    run("enable", codexHome);
+    const enabled = readFileSync(configPath, "utf8");
+    assert.equal(
+      (enabled.match(/^max_concurrent_threads_per_session\s*=/gm) || []).length,
+      1,
+    );
+    assert.match(enabled, /^max_concurrent_threads_per_session = 3$/m);
+    assert.match(enabled, /^default_subagent_model = "gpt-5\.6-terra"$/m);
+    assert.doesNotMatch(enabled, /codex-router-agent-concurrency-managed/);
+
+    run("disable", codexHome);
+    const restored = readFileSync(configPath, "utf8");
+    assert.match(restored, /^max_concurrent_threads_per_session = 3$/m);
+    assert.match(restored, /^default_subagent_model = "gpt-5\.6-terra"$/m);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("config manager adds concurrency inside an existing agents table and removes only its value", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-agent-default-"));
+  const configPath = path.join(codexHome, "config.toml");
+  writeFileSync(
+    configPath,
+    `[agents]
+default_subagent_model = "gpt-5.6-terra"
+
+[profiles.work]
+model_reasoning_effort = "high"
+`,
+    { mode: 0o600 },
+  );
+
+  try {
+    run("enable", codexHome);
+    const enabled = readFileSync(configPath, "utf8");
+    assert.equal((enabled.match(/^\[agents\]$/gm) || []).length, 1);
+    assert.match(enabled, /^max_concurrent_threads_per_session = 6$/m);
+    assert.match(enabled, /^default_subagent_model = "gpt-5\.6-terra"$/m);
+
+    run("disable", codexHome);
+    const restored = readFileSync(configPath, "utf8");
+    assert.match(restored, /^\[agents\]$/m);
+    assert.match(restored, /^default_subagent_model = "gpt-5\.6-terra"$/m);
+    assert.doesNotMatch(restored, /max_concurrent_threads_per_session/);
+    assert.doesNotMatch(restored, /codex-router-agent-concurrency-managed/);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("config manager does not add the legacy agents scalar to modern agent configs", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-modern-agents-"));
+  const configPath = path.join(codexHome, "config.toml");
+  const original = `[agents.gsd-example]
+description = "Example agent"
+config_file = "/tmp/example-agent.toml"
+`;
+  writeFileSync(configPath, original, { mode: 0o600 });
+
+  try {
+    run("enable", codexHome);
+    const enabled = readFileSync(configPath, "utf8");
+    assert.doesNotMatch(enabled, /codex-router-agent-concurrency-managed/);
+    assert.doesNotMatch(enabled, /^\[agents\]$/m);
+    assert.match(enabled, /^\[agents\.gsd-example\]$/m);
+
+    run("disable", codexHome);
+    assert.equal(readFileSync(configPath, "utf8").trimStart(), original);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("config manager skips the agents scalar when the codex binary rejects it", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-strict-schema-"));
+  const configPath = path.join(codexHome, "config.toml");
+  const original = `model = "gpt-5.5"
+`;
+  writeFileSync(configPath, original, { mode: 0o600 });
+
+  try {
+    run("enable", codexHome, undefined, [], { CODEX_BIN: scalarRejectingCodex });
+    const enabled = readFileSync(configPath, "utf8");
+    assert.doesNotMatch(enabled, /codex-router-agent-concurrency-managed/);
+    assert.doesNotMatch(enabled, /^\[agents\]$/m);
+    assert.match(enabled, /# BEGIN codex-router-managed/);
+
+    run("disable", codexHome, undefined, [], { CODEX_BIN: scalarRejectingCodex });
+    assert.equal(readFileSync(configPath, "utf8").trimStart(), original);
+  } finally {
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("config manager keeps writing the agents scalar when the codex binary accepts it", () => {
+  const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-router-lenient-schema-"));
+  const configPath = path.join(codexHome, "config.toml");
+  writeFileSync(configPath, `model = "gpt-5.5"\n`, { mode: 0o600 });
+
+  try {
+    run("enable", codexHome, undefined, [], { CODEX_BIN: scalarAcceptingCodex });
+    const enabled = readFileSync(configPath, "utf8");
+    assert.match(enabled, /codex-router-agent-concurrency-managed/);
+    assert.match(enabled, /^max_concurrent_threads_per_session = 6$/m);
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
   }

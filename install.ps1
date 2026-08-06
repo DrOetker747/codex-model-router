@@ -2,7 +2,8 @@
 param(
   [switch]$CheckoutInstall,
   [switch]$PrepareOnly,
-  [ValidateSet("codex", "cursor")]
+  [switch]$ForceDeps,
+  [ValidateSet("codex")]
   [string]$Target = "codex",
   [switch]$Guided,
   [switch]$Auto,
@@ -24,7 +25,7 @@ $PreviousRevision = $null
 $RepositoryUrl = if ($env:CODEX_ROUTER_REPOSITORY_URL) {
   $env:CODEX_ROUTER_REPOSITORY_URL
 } else {
-  "https://github.com/duolahypercho/codex-router.git"
+  "https://github.com/DrOetker747/codex-model-router.git"
 }
 
 function Assert-Command([string]$Name, [string]$Help) {
@@ -60,9 +61,9 @@ if (-not $CheckoutInstall) {
       $Origin = (& git -C $InstallDir remote get-url origin).Trim()
       $AllowedOrigins = @(
         $RepositoryUrl,
-        "https://github.com/duolahypercho/codex-router",
-        "https://github.com/duolahypercho/codex-router.git",
-        "git@github.com:duolahypercho/codex-router.git"
+        "https://github.com/DrOetker747/codex-model-router",
+        "https://github.com/DrOetker747/codex-model-router.git",
+        "git@github.com:DrOetker747/codex-model-router.git"
       ) | Where-Object { $_ }
       if ($Origin -notin $AllowedOrigins) {
         throw "$InstallDir has an unrecognized origin and will not be updated: $Origin"
@@ -92,10 +93,7 @@ if (-not $CheckoutInstall) {
     exit $LASTEXITCODE
   }
 
-  $SetupScript = switch ($Target) {
-    "cursor" { "src\cursor-setup.mjs" }
-    default { "src\setup.mjs" }
-  }
+  $SetupScript = "src\setup.mjs"
   $SetupArguments = @((Join-Path $Repository $SetupScript))
   $UseGuided = $Guided -or (-not $Auto -and [Environment]::UserInteractive)
   if ($UseGuided) { $SetupArguments += "--guided" }
@@ -136,16 +134,44 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Configure at least one provider before installing." }
   }
 
-  & npm ci --omit=dev
-  if ($LASTEXITCODE -ne 0) { throw "npm dependency installation failed." }
+  # Every update re-runs this installer, so the dependency steps are skipped
+  # when their inputs are unchanged; -ForceDeps (used by doctor --fix) rebuilds
+  # them.
+  function Get-InstallStep([string]$Step) {
+    if ($ForceDeps) { return "run" }
+    try {
+      $Status = (& node src/install-plan.mjs status $Step 2>$null | Select-Object -Last 1)
+      if ($LASTEXITCODE -ne 0) { return "run" }
+      return "$Status".Trim()
+    } catch {
+      return "run"
+    }
+  }
+
+  if ((Get-InstallStep "node-deps") -eq "skip") {
+    Write-Host "Node dependencies already match package-lock.json; skipping npm ci."
+  } else {
+    & npm ci --omit=dev
+    if ($LASTEXITCODE -ne 0) { throw "npm dependency installation failed." }
+    & node src/install-plan.mjs record node-deps
+    if ($LASTEXITCODE -ne 0) { throw "Recording the Node dependency state failed." }
+  }
 
   $Python = Join-Path $ScriptDirectory ".venv\Scripts\python.exe"
-  if (Get-Command "uv" -ErrorAction SilentlyContinue) {
+  if ((Get-InstallStep "python-deps") -eq "skip") {
+    Write-Host "LiteLLM already matches the pinned versions; skipping the Python install."
+  } elseif (Get-Command "uv" -ErrorAction SilentlyContinue) {
     if (-not (Test-Path $Python)) {
       & uv venv --python 3.12 .venv
       if ($LASTEXITCODE -ne 0) { throw "uv could not create the Python environment." }
     }
-    & uv pip install --python $Python "litellm[proxy]==1.93.0"
+    # litellm 1.95.0 needs fastapi<0.140 (get_flat_dependant was removed);
+    # re-test before lifting either pin. src/install-plan.mjs holds the same
+    # pins and its test fails when only one copy moves.
+    & uv pip install --python $Python "litellm[proxy]==1.95.0" "fastapi==0.139.2"
+    if ($LASTEXITCODE -ne 0) { throw "LiteLLM installation failed." }
+    & node src/install-plan.mjs record python-deps
+    if ($LASTEXITCODE -ne 0) { throw "Recording the Python dependency state failed." }
   } else {
     if (Get-Command "py" -ErrorAction SilentlyContinue) {
       & py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)"
@@ -161,9 +187,11 @@ try {
     if (-not (Test-Path $Python)) { throw "The Python virtual environment was not created." }
     & $Python -m pip install --upgrade pip
     if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed." }
-    & $Python -m pip install "litellm[proxy]==1.93.0"
+    & $Python -m pip install "litellm[proxy]==1.95.0" "fastapi==0.139.2"
+    if ($LASTEXITCODE -ne 0) { throw "LiteLLM installation failed." }
+    & node src/install-plan.mjs record python-deps
+    if ($LASTEXITCODE -ne 0) { throw "Recording the Python dependency state failed." }
   }
-  if ($LASTEXITCODE -ne 0) { throw "LiteLLM installation failed." }
 
   & node src/secret.mjs ensure
   if ($LASTEXITCODE -ne 0) { throw "Local router-key setup failed." }
@@ -187,7 +215,7 @@ try {
     exit 0
   }
 
-  $ConfigManager = if ($Target -eq "cursor") { "src\cursor-config-manager.mjs" } else { "src\config-manager.mjs" }
+  $ConfigManager = "src\config-manager.mjs"
   $ConfigEnabled = $false
   $ServiceInstalled = $false
   try {
@@ -206,11 +234,7 @@ try {
     if ($ConfigEnabled) { & node $ConfigManager disable 2>$null | Out-Null }
     throw
   }
-  if ($Target -eq "cursor") {
-    Write-Host "Installed the local OpenAI-compatible gateway for Cursor. Run model-router cursor setup for the connection details."
-  } else {
-    Write-Host "Installed the selected external model routes. Fully quit and reopen Codex."
-  }
+  Write-Host "Installed the selected external model routes. Fully quit and reopen Codex."
 } finally {
   Pop-Location
 }

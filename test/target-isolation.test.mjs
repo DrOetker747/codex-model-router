@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-function portsForTarget(target) {
-  const output = execFileSync(
+function pathsForTarget(target) {
+  return execFileSync(
     process.execPath,
     [
       "--input-type=module",
@@ -28,29 +28,24 @@ function portsForTarget(target) {
       },
     },
   );
-  return JSON.parse(output);
 }
 
-test("Cursor path defaults are its own dedicated ports", () => {
-  assert.deepEqual(portsForTarget("cursor"), {
-    gateway: 4105,
-    oauth: 4106,
-    router: 4104,
-    api: 4107,
-    grokOauth: 4116,
+test("codex owns the default port block", () => {
+  assert.deepEqual(JSON.parse(pathsForTarget("codex")), {
+    gateway: 4100,
+    oauth: 4101,
+    router: 4102,
+    api: 4103,
+    grokOauth: 4108,
   });
 });
 
-test("every target's five ports are pairwise disjoint across all targets", () => {
-  const targets = ["codex", "cursor"];
-  const seen = new Map();
-  for (const target of targets) {
-    for (const value of Object.values(portsForTarget(target))) {
-      assert.ok(
-        !seen.has(value),
-        `port ${value} is shared by ${seen.get(value)} and ${target}`,
-      );
-      seen.set(value, target);
-    }
+test("removed targets are rejected rather than silently mapped to codex", () => {
+  for (const target of ["cursor", "opencode"]) {
+    assert.throws(
+      () => pathsForTarget(target),
+      /MODEL_ROUTER_TARGET must be one of/,
+      `${target} should no longer be a valid target`,
+    );
   }
 });

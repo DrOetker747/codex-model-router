@@ -2,7 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const supportedTargets = new Set(["codex", "cursor"]);
+const supportedTargets = new Set(["codex"]);
 
 export const TARGET = process.env.MODEL_ROUTER_TARGET || "codex";
 if (!supportedTargets.has(TARGET)) {
@@ -11,11 +11,7 @@ if (!supportedTargets.has(TARGET)) {
   );
 }
 
-const TARGET_DISPLAY_NAMES = {
-  codex: "Codex Router",
-  cursor: "Cursor Router",
-};
-export const TARGET_DISPLAY_NAME = TARGET_DISPLAY_NAMES[TARGET];
+export const TARGET_DISPLAY_NAME = "Codex Router";
 export const SOURCE_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -23,24 +19,7 @@ export const SOURCE_ROOT = path.resolve(
 export const CODEX_HOME =
   process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 
-function defaultManagedStateDir(targetName) {
-  return process.platform === "win32"
-    ? path.join(
-        process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"),
-        "model-router",
-        targetName,
-      )
-    : path.join(
-        process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"),
-        "model-router",
-        targetName,
-      );
-}
-
 function managedStateDir() {
-  if (TARGET === "cursor") {
-    return process.env.CURSOR_ROUTER_STATE_DIR || defaultManagedStateDir("cursor");
-  }
   return (
     process.env.CODEX_ROUTER_STATE_DIR ||
     process.env.KIMI_CODEX_STATE_DIR ||
@@ -55,6 +34,7 @@ export const CODEX_AGENTS_DIR = path.join(CODEX_HOME, "agents");
 export const NATIVE_CATALOG_PATH = path.join(STATE_DIR, "native-models.json");
 export const MERGED_CATALOG_PATH = path.join(STATE_DIR, "merged-models.json");
 export const NATIVE_ALIAS_PATH = path.join(STATE_DIR, "native-aliases.json");
+export const ANNOUNCED_MODELS_PATH = path.join(STATE_DIR, "announced-models.json");
 export const LITELLM_CONFIG_PATH = path.join(STATE_DIR, "litellm.yaml");
 export const INTERNAL_SECRET_PATH = path.join(STATE_DIR, "internal-secret");
 export const CALLER_SECRET_PATH = path.join(STATE_DIR, "caller-secret");
@@ -65,25 +45,18 @@ export const MIGRATIONS_DIR = path.join(STATE_DIR, "migrations");
 export const SUPPORT_DIR = path.join(STATE_DIR, "support");
 export const LOG_PATH = path.join(STATE_DIR, "router.log");
 export const BACKUP_PATH = path.join(CODEX_HOME, "config.toml.pre-codex-router");
-const SERVICE_LABELS = {
-  codex: "io.github.codex-router",
-  cursor: "io.github.codex-router.cursor",
-};
-export const SERVICE_LABEL = SERVICE_LABELS[TARGET];
+export const SERVICE_LABEL = "io.github.codex-router";
 export const LEGACY_SERVICE_LABEL = "io.github.kimi-codex-router";
 export const PROTOTYPE_SERVICE_LABEL = "com.ziwenxu.kimi-codex-proxy";
-export const LEGACY_STATE_DIRS = Object.freeze(
-  TARGET === "codex"
-    ? [LEGACY_STATE_DIR, path.join(CODEX_HOME, "kimi-proxy")]
-    : [],
-);
+export const LEGACY_STATE_DIRS = Object.freeze([
+  LEGACY_STATE_DIR,
+  path.join(CODEX_HOME, "kimi-proxy"),
+]);
 export const LAUNCH_AGENTS_DIR =
   process.env.MODEL_ROUTER_LAUNCH_AGENTS_DIR ||
   process.env.CODEX_ROUTER_LAUNCH_AGENTS_DIR ||
   path.join(os.homedir(), "Library", "LaunchAgents");
 export const LAUNCH_AGENT_PATH = path.join(LAUNCH_AGENTS_DIR, `${SERVICE_LABEL}.plist`);
-
-export const CURSOR_CONFIG_STATE_PATH = path.join(STATE_DIR, "cursor-config-state.json");
 
 function port(name, fallback) {
   const value = Number(process.env[name] || fallback);
@@ -93,44 +66,26 @@ function port(name, fallback) {
   return value;
 }
 
-// Each target owns a disjoint block. gateway/oauth/router/api are the original
-// four; grokOauth is a fifth forwarder port for the Grok OAuth provider.
-const TARGET_PORT_DEFAULTS = {
-  codex: { gateway: 4100, oauth: 4101, router: 4102, api: 4103, grokOauth: 4108 },
-  cursor: { gateway: 4105, oauth: 4106, router: 4104, api: 4107, grokOauth: 4116 },
-};
-const targetPortDefaults = TARGET_PORT_DEFAULTS[TARGET];
-
+// gateway/oauth/router/api are the original four; grokOauth is a fifth
+// forwarder port for the Grok OAuth provider.
 export const PORTS = {
   gateway: port(
     "MODEL_ROUTER_GATEWAY_PORT",
-    (TARGET === "codex"
-      ? process.env.CODEX_ROUTER_GATEWAY_PORT || process.env.KIMI_GATEWAY_PORT
-      : undefined) ||
-      targetPortDefaults.gateway,
+    process.env.CODEX_ROUTER_GATEWAY_PORT || process.env.KIMI_GATEWAY_PORT || 4100,
   ),
   oauth: port(
     "MODEL_ROUTER_OAUTH_PORT",
-    (TARGET === "codex"
-      ? process.env.CODEX_ROUTER_OAUTH_PORT || process.env.KIMI_OAUTH_FORWARD_PORT
-      : undefined) ||
-      targetPortDefaults.oauth,
+    process.env.CODEX_ROUTER_OAUTH_PORT || process.env.KIMI_OAUTH_FORWARD_PORT || 4101,
   ),
   router: port(
     "MODEL_ROUTER_PORT",
-    (TARGET === "codex"
-      ? process.env.CODEX_ROUTER_PORT || process.env.KIMI_ROUTER_PORT
-      : undefined) ||
-      targetPortDefaults.router,
+    process.env.CODEX_ROUTER_PORT || process.env.KIMI_ROUTER_PORT || 4102,
   ),
   api: port(
     "MODEL_ROUTER_API_PORT",
-    (TARGET === "codex"
-      ? process.env.CODEX_ROUTER_API_PORT || process.env.KIMI_API_FORWARD_PORT
-      : undefined) ||
-      targetPortDefaults.api,
+    process.env.CODEX_ROUTER_API_PORT || process.env.KIMI_API_FORWARD_PORT || 4103,
   ),
-  grokOauth: port("MODEL_ROUTER_GROK_OAUTH_PORT", targetPortDefaults.grokOauth),
+  grokOauth: port("MODEL_ROUTER_GROK_OAUTH_PORT", 4108),
 };
 
 export function loopback(portNumber, suffix = "") {

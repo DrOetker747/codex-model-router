@@ -679,6 +679,16 @@ h2 {
   background: rgba(255, 255, 255, 0.085);
 }
 
+.mini-button.danger {
+  min-width: 0;
+  border-color: rgba(255, 125, 136, 0.26);
+  color: #ffb2b9;
+}
+
+.mini-button.danger:hover {
+  background: rgba(255, 125, 136, 0.12);
+}
+
 .mini-button:disabled,
 .button:disabled {
   cursor: wait;
@@ -860,6 +870,16 @@ h2 {
 
 .button.primary:hover {
   background: #4c7bd5;
+}
+
+.button.danger {
+  border-color: rgba(255, 125, 136, 0.45);
+  background: #a33643;
+  color: white;
+}
+
+.button.danger:hover {
+  background: #b53f4d;
 }
 
 .island {

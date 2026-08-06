@@ -2,6 +2,233 @@
 
 ## Unreleased
 
+- **Multi-key quota rotation with automatic failover.** A provider can now hold
+  up to five API keys (`provider-key <id> set --slot N`). When the upstream
+  reports a spent key (401/402/429), the API forwarder marks that slot as
+  exhausted for a 10-minute cooldown, switches to the next slot, and retries the
+  same request — no more mid-task quota walls. Exhaustion state is persisted in
+  the state directory so a service restart does not hammer a spent key, and the
+  sticky last-used slot means healthy keys keep being preferred. The forwarder
+  health endpoint reports the configured slot count per provider.
+
+- **Free OpenCode Zen models.** Eight zero-cost models are now part of the
+  catalog under the `opencode-zen` provider (same key as opencode Go, served
+  from `https://opencode.ai/zen/v1`): Big Pickle, DeepSeek V4 Flash Free,
+  MiMo-V2.5 Free, Laguna S 2.1 Free, Ling-3.0-flash Free, LongCat-2.0 Free,
+  North Mini Code Free, and Nemotron 3 Ultra Free. All are verified working
+  through the gateway.
+
+- **Duplicate-free model picker.** Protocol variants (for example
+  `opencode-go-messages/qwen3.8-max` alongside `opencode-go/qwen3.8-max`)
+  republished identical display names into the Codex picker. The catalog now
+  deduplicates by display identity, preferring the canonical family entry, so
+  every model appears exactly once while all variant slugs stay routable.
+
+- **Codex updates now refresh the tray for every supported install location.**
+  Guided setup installs the companion at `~/Applications/Model Router.app`,
+  but updates only refreshed the tray when the checkout's own `dist/Model
+  Router.app` existed. The update path now also detects the home-Applications
+  bundle and the registered login-item bundle, then rebuilds and relaunches
+  the tray from the updated checkout.
+
+- **`doctor --fix` no longer breaks a running install from a second checkout.**
+  When the recorded state owner still exists, repair now runs from that
+  checkout and keeps ownership there. Deliberate ownership transfer still
+  requires an explicit override or a fresh install.
+
+- **The macOS tray stays linked to the apps that launch it.** If the tray
+  bundle moves (for example from a checkout on a removable volume to the
+  stable install), the next launch re-registers the login item against the
+  current bundle; the launcher replaces an already-running tray with the
+  rebuilt bundle; and `codex update` rebuilds and relaunches an installed tray
+  so a router update never leaves a stale companion behind. Update & Verify
+  now updates the checkout recorded as the installation owner instead of
+  whichever checkout the tray binary was built from.
+
+## 0.4.0-beta.2
+
+- **Updates stop reinstalling dependencies that never changed.** Every update
+  re-ran the whole installer, so a commit that touched one `.mjs` file still
+  wiped `node_modules` for a fresh `npm ci` and re-resolved the entire
+  `litellm[proxy]` tree against PyPI — which pulled unpinned transitive
+  upgrades and, on a cold uv cache or a slow link, dominated the run. Both
+  installers now fingerprint each dependency step (the lockfile for Node, the
+  pinned requirement set plus the installed distribution versions for Python)
+  and skip it when the artifacts already match, recording the stamp next to
+  `node_modules/` and `.venv/` so deleting either one reinstalls. Repair still
+  rebuilds everything: `doctor --fix` passes `--force-deps` (`-ForceDeps` on
+  Windows), which fingerprints cannot know about a corrupted tree. The
+  LiteLLM and FastAPI pins now live in `src/install-plan.mjs`, and a test
+  fails if either installer's copy drifts.
+
+- **`update check` no longer performs the update.** The `bin/update` wrapper
+  hardcoded the `update` subcommand, so the read-only availability check was
+  unreachable from the CLI and asking "is there a new version?" reinstalled
+  the router instead. Both `bin/update` and `codex-router.ps1 update` now
+  forward the subcommand, and a bare invocation still updates.
+
+- **Reasoning efforts now match what the installed Codex build can display.**
+  Codex's picker parses effort levels into a fixed enum and silently drops
+  values it does not recognize; `max` and `ultra` only joined that enum in
+  Codex 0.143.0, so on older builds the `max` tiers curated for several
+  models simply vanished from the effort menu (GLM-5.2 lost its second tier,
+  DeepSeek V4 Flash showed two levels instead of three). The catalog now
+  derives the supported vocabulary from the installed Codex version and
+  republishes out-of-range efforts at the nearest supported tier (`max` →
+  `xhigh`), keeping defaults and announcement copy in range. Routing is
+  unchanged — the forwarder already folds `xhigh` back to each vendor's
+  documented maximum.
+
+- **Legacy opencode Go models now offer Codex's native migration prompt.**
+  GLM-5.1, Kimi K2.6, and MiniMax M2.7 carry an `upgradeTo` entry pointing at
+  their generational successor on the same subscription (GLM-5.2, Kimi K3,
+  MiniMax M3), so operators still running the older model get the
+  full-screen "upgrade" modal and can switch their default with one accept —
+  the older models stay in the picker. Upgrade targets are now validated at
+  registry load: a checked-in prompt pointing at a missing or unlisted slug
+  fails the build, and a user-curated one is skipped with a warning instead
+  of shipping a modal that can never render.
+
+- **New models announce themselves in Codex.** Checked-in models that newly
+  become routable — shipped by a router update, or unlocked the moment their
+  provider is credentialed and enabled — now carry Codex's native
+  "Introducing {model}" announcement for seven days, with copy assembled from
+  their verified picker metadata (context window, effort ladder, image
+  input). The first catalog capture seeds the tracking state silently so an
+  install never announces the whole catalog, locally curated models never
+  self-announce, and Codex's own per-model show cap still applies. Curators
+  can override the generated copy with an `availabilityNux` string on the
+  registry entry, and a new `upgradeTo` field (`{ model, markdown }`) drives
+  Codex's full-screen migration prompt for a genuine successor model —
+  accepting it switches the operator's default model, so it is reserved for
+  deliberate hand-offs.
+
+- **Adapted the managed `[agents]` concurrency default to the installed Codex
+  build.** Some Codex builds (observed on 0.141-0.145) parse `[agents]` as a
+  pure role map and refuse to load any config containing the scalar, which
+  broke `codex login status` and `codex doctor` outright. The config manager
+  now probes the installed binary with a minimal config before writing the
+  scalar and skips it when the build rejects it, so builds that accept the
+  scalar keep the concurrency cap and strict builds keep a loadable config.
+- **Re-captured the native model catalog when the Codex build changes.** The
+  cached capture now records the Codex version that produced it and is
+  refreshed from `codex debug models` on mismatch, so a catalog captured by an
+  older build no longer feeds missing or stale capability fields (such as
+  `supports_reasoning_summaries`) into the merged catalog after an upgrade. If
+  the re-capture fails, the router keeps serving the previous capture and says
+  so instead of failing the rebuild.
+
+- **Reasoning effort ladders now match each vendor's documentation.** Every
+  listed model's picker levels were verified against the provider's official
+  API docs: Kimi K3 (API) gains its documented low/high/max ladder instead of
+  a forced max; DeepSeek V4 Flash gains its real low tier; Claude Opus 4.8
+  gains the full low/medium/high/xhigh/max `output_config.effort` ladder and
+  the forwarder now passes the picked effort through instead of hardcoding
+  high; GLM-5.2 sends its two documented tiers explicitly (upstream defaults
+  to max when the parameter is omitted) and defaults to max as Z.ai
+  recommends; GLM-5-Turbo no longer advertises effort control it does not
+  support; and the cross-vendor DeepSeek/GLM models resold through the
+  Alibaba plan gain the high/max ladder DashScope documents for them.
+  The opencode Go models take their ladders from opencode's own model
+  registry (Grok low/medium/high; GLM-5.2 and DeepSeek V4 Pro high/max;
+  DeepSeek V4 Flash low/high/max; HY3 low/high; Kimi K3 max-only; GPT 5.6
+  Luna low through max), passed through verbatim since the gateway validates
+  these values itself. Providers whose thinking control is binary or
+  undocumented (Qwen via DashScope, Ollama Cloud, MiniMax, MiMo, Kimi K2.x)
+  intentionally keep a single level.
+
+- **Curated models now carry user-provided metadata, including reasoning
+  efforts.** `bin/curate-models` asks for each new model's context window,
+  image support, and reasoning efforts (so curated models get the effort
+  switcher in the Codex picker), with `--efforts` available for the
+  non-interactive `--models` form. Every value defaults conservatively and
+  stays editable in `user-models.json`. No online metadata catalog is
+  consulted — the provider's own `/v1/models` endpoint decides which models
+  exist, and the metadata is yours.
+
+- **New Meta Model API provider.** The `meta` provider (shown as "Meta API")
+  routes the Responses protocol to `https://api.meta.ai/v1` with a stored
+  `META_API_KEY`. Three Muse Spark models ship in the registry: 1.2, its
+  cheaper 1.2 Contributor tier (whose inputs and outputs Meta may use for
+  training), and the previous-generation 1.1 — the 1.2 tiers with reasoning
+  summaries enabled. More Meta models can be curated per machine with
+  `bin/curate-models meta`.
+
+- **opencode Go is one provider family everywhere.** The
+  `opencode-go-messages` and `opencode-go-responses` protocol variants now
+  declare `variantOf: "opencode-go"` in the registry, and provider selection
+  treats the three as a single unit: enabling or disabling any of them toggles
+  the whole family, the selection file stores only `opencode-go`, and every
+  read expands it back to all variants. This retroactively fixes installs
+  whose selection predates the variants — MiniMax, Qwen, and GPT 5.6 Luna
+  models no longer vanish from the Codex picker while the other opencode Go
+  models show. Setup, the tray, and `providers list` now show one
+  **opencode Go** entry instead of three.
+
+- **Removed the Cursor and opencode app targets.** The router now focuses on
+  Codex only: `--target codex` is the sole installer target, the Cursor Chat
+  Completions gateway and the opencode config manager/subagent generator are
+  gone, and their port blocks (4104-4107, 4116, 4120-4126) are released. The
+  opencode Go model subscription is unaffected — it remains a regular provider
+  inside Codex. Anyone with a previously installed Cursor or opencode
+  integration can remove the old service with that checkout's
+  `model-router <target> uninstall` before updating.
+
+- A **Show tray** mode in the macOS tray's Settings tab can tie the menu bar
+  icon, Dynamic Island, and desktop panel to the Codex/ChatGPT desktop apps:
+  the surfaces appear when either app launches and hide when the last one
+  quits, while the tray process stays resident as the watcher. The default
+  remains always-visible.
+
+- The macOS tray registers itself as a login item on its first launch, so it
+  reopens automatically after a reboot instead of requiring a manual
+  `./bin/model-router-tray`. A **Start at login** toggle in the Settings tab
+  (backed by `SMAppService`, also visible in System Settings › Login Items)
+  controls it, and the automatic registration happens only once — disabling
+  the item is never overridden.
+
+- The opencode target now generates one subagent per selected model in
+  opencode's config, and refreshes those entries when providers are enabled,
+  disabled, or given new keys. `setup`, `doctor`, `status`, `enable`, `disable`,
+  and `uninstall` all support `MODEL_ROUTER_TARGET=opencode` through
+  `bin/model-router opencode ...`, and the opencode installer works from both
+  `install.sh --target opencode` and `install.ps1 -Target opencode`.
+
+- Fixed native OpenAI models disappearing from the Codex picker on Windows when
+  the Codex CLI is installed through npm (#46). `where.exe codex` lists the
+  extensionless POSIX shim before `codex.cmd`, and Node cannot spawn the former
+  without a shell, so every probe threw ENOENT. The router now picks a shim Node
+  can execute and runs `.cmd`/`.bat` through a shell with the path quoted.
+- A Codex binary that cannot be spawned is no longer reported as a signed-out
+  session. That conflation is what let one spawn error silently strip every
+  native model from the catalog; the catalog build now refuses to run rather
+  than guess, and the doctor reports the probe failure on its own line.
+
+- `DASHSCOPE_API_KEY` is documented as a `qwen-plan` credential alongside
+  `QWEN_PLAN_API_KEY`, and the README now records that Qwen is key-only:
+  Alibaba discontinued the Qwen Code OAuth free tier on 2026-04-15, so there is
+  no OAuth path to add. Point `QWEN_PLAN_BASE_URL` at the DashScope
+  compatible-mode endpoint to bill a pay-as-you-go key through the same
+  provider.
+
+- The Alibaba Model Studio plan provider (`qwen-plan`) now lists every chat
+  model the Individual Plan serves, not just Qwen3.7: Qwen3.8 Max, Qwen3.8 Max
+  Preview and Qwen3.6 Flash (all with vision input), plus the cross-vendor
+  models the plan resells — DeepSeek V4 Pro, DeepSeek V4 Flash (0731) and
+  GLM-5.2. The cross-vendor entries use the DashScope compatible-mode request
+  profile rather than each vendor's native thinking profile, because DashScope
+  rejects the vendor-specific parameters. The plan's speech, image and video
+  models are deliberately not listed — they are not chat-completions models
+  and would fail on every request from a model picker.
+
+- API keys can now be replaced or removed from the desktop app and the macOS
+  tray, not just the terminal. Each connected API provider gains a **Replace
+  key** action and a confirmed **Remove** action; removing deletes the managed
+  key files and hides the provider from the Codex model picker. If a key is
+  also present in the macOS Keychain or the environment, the removal result
+  says where it still resolves from instead of claiming a clean disconnect.
+  `control credential <provider> --remove` exposes the same operation.
+
 - The Dynamic Island setting is now a three-way mode: Off, Notch (the
   existing top-of-screen overlay), or Desktop — a draggable widget-style
   panel pinned just above the desktop icons that always shows live router

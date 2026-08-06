@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   brotliDecompressSync,
   gunzipSync,
@@ -15,15 +15,19 @@ import {
 import {
   HOP_BY_HOP_HEADERS,
   httpErrorStatus,
-  MAX_BODY_BYTES,
   pipeResponse,
   readRequestBody,
   writeJson,
 } from "./http-utils.mjs";
-import { MERGED_CATALOG_PATH, PORTS, loopback } from "./paths.mjs";
+import {
+  MERGED_CATALOG_PATH,
+  NATIVE_CATALOG_PATH,
+  PORTS,
+  loopback,
+} from "./paths.mjs";
 import { MODEL_BY_SLUG, PROVIDERS, providerForModel } from "./model-registry.mjs";
 import { readNativeAliases } from "./native-alias.mjs";
-import { readProviderSelection } from "./provider-selection.mjs";
+import { canonicalProviderId, readProviderSelection } from "./provider-selection.mjs";
 import { ResponseUsageTransform } from "./response-usage.mjs";
 import { activityMetadataFromHeaders } from "./codex-session-names.mjs";
 import { recordUsageEvent } from "./usage-events.mjs";
@@ -62,12 +66,31 @@ const CALLER_KEY = process.env.CODEX_ROUTER_CALLER_KEY;
 const QUIET =
   process.env.CODEX_ROUTER_QUIET === "1" || process.env.KIMI_PROXY_QUIET === "1";
 const ERROR_STATUS_DURATION_MS = 8_000;
+const configuredDecodedBodyBytes = Number(
+  process.env.MODEL_ROUTER_MAX_DECODED_BODY_BYTES ||
+    process.env.CODEX_ROUTER_MAX_DECODED_BODY_BYTES ||
+    256 * 1024 * 1024,
+);
+const MAX_DECODED_BODY_BYTES =
+  Number.isFinite(configuredDecodedBodyBytes) && configuredDecodedBodyBytes > 0
+    ? Math.floor(configuredDecodedBodyBytes)
+    : 256 * 1024 * 1024;
+// No single Codex turn streams for this long. Anything still marked in-flight
+// past this point leaked (crashed client, half-closed socket) and would
+// otherwise inflate the tray activity count until the router restarts.
+const STALE_ACTIVITY_MS = 15 * 60_000;
 const NATIVE_IMAGE_PATHS = new Set([
   "/images/edits",
   "/images/generations",
   "/v1/images/edits",
   "/v1/images/generations",
 ]);
+const AGENT_PAYLOAD_RELAY_TOOL = "relay_external_agent_payload";
+const AGENT_PAYLOAD_CACHE_TTL_MS = 15 * 60 * 1_000;
+const AGENT_PAYLOAD_CACHE_MAX_BYTES = 8 * 1024 * 1024;
+const AGENT_PAYLOAD_CACHE_MAX_ENTRIES = 256;
+const agentPayloadCache = new Map();
+let agentPayloadCacheBytes = 0;
 
 let requestSequence = 0;
 const activeRequests = new Map();
@@ -79,7 +102,16 @@ let errorStatusUntil = 0;
 if (!INTERNAL_KEY) throw new Error("CODEX_ROUTER_INTERNAL_KEY is required.");
 assertCallerSecret(CALLER_KEY);
 
+function pruneStaleActivity(now = Date.now()) {
+  for (const [requestId, entry] of activeRequests) {
+    if (now - (entry?.startedAt ?? 0) > STALE_ACTIVITY_MS) {
+      activeRequests.delete(requestId);
+    }
+  }
+}
+
 function activityPayload() {
+  pruneStaleActivity();
   const active = [...activeRequests.values()].filter(
     (entry) => entry && typeof entry === "object" && entry.provider,
   );
@@ -104,7 +136,8 @@ function activityPayload() {
 
 function beginRequestActivity() {
   const requestId = ++requestSequence;
-  activeRequests.set(requestId, null);
+  const startedAt = Date.now();
+  activeRequests.set(requestId, { startedAt });
   let finished = false;
   return {
     setRoute({ provider, model, sessionName, ...metadata } = {}) {
@@ -115,7 +148,7 @@ function beginRequestActivity() {
         ...(model ? { model } : {}),
         ...(sessionName ? { sessionName } : {}),
         ...metadata,
-        startedAt: Date.now(),
+        startedAt,
       };
       activeRequests.set(requestId, entry);
       lastUsedProvider = provider;
@@ -186,7 +219,7 @@ function decodeBody(body, contentEncoding) {
   let decoded = body;
   try {
     for (const encoding of encodings) {
-      const options = { maxOutputLength: MAX_BODY_BYTES };
+      const options = { maxOutputLength: MAX_DECODED_BODY_BYTES };
       if (encoding === "zstd") decoded = zstdDecompressSync(decoded, options);
       else if (encoding === "gzip" || encoding === "x-gzip") {
         decoded = gunzipSync(decoded, options);
@@ -200,13 +233,20 @@ function decodeBody(body, contentEncoding) {
     }
   } catch (error) {
     if (error?.status) throw error;
+    if (error?.code === "ERR_BUFFER_TOO_LARGE") {
+      const wrapped = new Error(
+        `Decoded request body exceeds ${MAX_DECODED_BODY_BYTES} bytes.`,
+      );
+      wrapped.status = 413;
+      throw wrapped;
+    }
     const wrapped = new Error(
       `Unable to decompress request body: ${error instanceof Error ? error.message : String(error)}`,
     );
     wrapped.status = 400;
     throw wrapped;
   }
-  if (decoded.length > MAX_BODY_BYTES) {
+  if (decoded.length > MAX_DECODED_BODY_BYTES) {
     const error = new Error("Decoded request body is too large.");
     error.status = 413;
     throw error;
@@ -242,16 +282,12 @@ function nativeTarget(pathname, search) {
   return `${NATIVE_BASE}${withoutV1}${search}`;
 }
 
-function catalogSnapshot() {
+function catalogModels() {
   try {
     const parsed = JSON.parse(readFileSync(CATALOG_PATH, "utf8"));
-    return {
-      models: Array.isArray(parsed.models) ? parsed.models : [],
-      catalogUpdatedAt:
-        typeof parsed.catalogUpdatedAt === "string" ? parsed.catalogUpdatedAt : undefined,
-    };
+    return Array.isArray(parsed.models) ? parsed.models : [];
   } catch {
-    return { models: [], catalogUpdatedAt: undefined };
+    return [];
   }
 }
 
@@ -326,7 +362,283 @@ function normalizeRoutedInput(input) {
           ? `${SUMMARY_PREFIX}\n\n${summary}`
           : "[Earlier conversation history was compacted in an unreadable format.]",
       );
+    })
+    .map((item) => {
+      // LiteLLM rejects messages whose text content is empty; Codex emits
+      // such filler assistant messages around tool calls. Strip empty text
+      // parts, and drop messages that carry nothing at all.
+      if (item?.type !== "message" || !Array.isArray(item.content)) return item;
+      const content = item.content.filter((part) => {
+        if (!part || typeof part !== "object") return true;
+        if (
+          (part.type === "input_text" ||
+            part.type === "output_text" ||
+            part.type === "text") &&
+          typeof part.text === "string" &&
+          part.text.trim() === ""
+        ) {
+          return false;
+        }
+        return true;
+      });
+      return { ...item, content };
+    })
+    .filter((item) => {
+      if (item?.type !== "message") return true;
+      if (Array.isArray(item.tool_calls) && item.tool_calls.length > 0) return true;
+      if (typeof item.content === "string") return item.content.trim() !== "";
+      if (Array.isArray(item.content)) return item.content.length > 0;
+      return true;
     });
+}
+
+function nativeAgentRelayModel() {
+  const configured = String(process.env.MODEL_ROUTER_AGENT_RELAY_MODEL || "").trim();
+  if (configured) return configured;
+  try {
+    const parsed = JSON.parse(readFileSync(NATIVE_CATALOG_PATH, "utf8"));
+    const models = Array.isArray(parsed?.models) ? parsed.models : [];
+    const preferred = models.find((model) => model?.slug === "gpt-5.6-sol");
+    const listed = models.find(
+      (model) => typeof model?.slug === "string" && model.visibility === "list",
+    );
+    const available = models.find((model) => typeof model?.slug === "string");
+    return preferred?.slug || listed?.slug || available?.slug || "gpt-5.6-sol";
+  } catch {
+    return "gpt-5.6-sol";
+  }
+}
+
+function encryptedAgentPayload(item) {
+  if (!Array.isArray(item?.content)) return undefined;
+  const visibleText = item.content
+    .filter(
+      (part) =>
+        ["input_text", "text"].includes(part?.type) && typeof part.text === "string",
+    )
+    .map((part) => part.text)
+    .join("");
+  if (!/Message Type:\s*(?:NEW_TASK|MESSAGE|FOLLOWUP_TASK|FINAL_ANSWER)\b[\s\S]*\nPayload:\s*$/i.test(visibleText)) {
+    return undefined;
+  }
+  const encrypted = item.content.find(
+    (part) =>
+      part?.type === "encrypted_content" &&
+      typeof part.encrypted_content === "string" &&
+      part.encrypted_content.length > 0,
+  );
+  if (!encrypted) return undefined;
+  return {
+    content: encrypted.encrypted_content,
+    native: /^gAAAAA[A-Za-z0-9_-]+={0,2}$/.test(encrypted.encrypted_content),
+  };
+}
+
+function parseRelayedAgentPayload(payload) {
+  const output = payload?.item
+    ? [payload.item]
+    : Array.isArray(payload?.output)
+      ? payload.output
+      : Array.isArray(payload?.response?.output)
+        ? payload.response.output
+        : [];
+  const call = output.find(
+    (item) => item?.type === "function_call" && item.name === AGENT_PAYLOAD_RELAY_TOOL,
+  );
+  if (!call) return undefined;
+  return parseRelayedAgentArguments(call.arguments);
+}
+
+function parseRelayedAgentArguments(value) {
+  try {
+    const args = typeof value === "string" ? JSON.parse(value) : value;
+    return typeof args?.payload === "string" ? args.payload : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseRelayedAgentPayloadSse(bytes) {
+  const events = bytes.toString("utf8").split(/\r?\n\r?\n/);
+  const relayItems = new Set();
+  let argumentDeltas = "";
+  for (const rawEvent of events) {
+    const data = rawEvent
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n")
+      .trim();
+    if (!data || data === "[DONE]") continue;
+    try {
+      const event = JSON.parse(data);
+      if (
+        event?.type === "response.output_item.added" &&
+        event.item?.type === "function_call" &&
+        event.item.name === AGENT_PAYLOAD_RELAY_TOOL
+      ) {
+        if (event.item.id) relayItems.add(event.item.id);
+        if (event.item.call_id) relayItems.add(event.item.call_id);
+      }
+      const relatedArgumentEvent =
+        relayItems.size === 0 ||
+        relayItems.has(event?.item_id) ||
+        relayItems.has(event?.call_id);
+      if (
+        event?.type === "response.function_call_arguments.delta" &&
+        relatedArgumentEvent &&
+        typeof event.delta === "string"
+      ) {
+        argumentDeltas += event.delta;
+      }
+      if (
+        event?.type === "response.function_call_arguments.done" &&
+        relatedArgumentEvent
+      ) {
+        const completed = parseRelayedAgentArguments(event.arguments);
+        if (completed !== undefined) return completed;
+      }
+      const plaintext = parseRelayedAgentPayload(event);
+      if (plaintext !== undefined) return plaintext;
+    } catch {
+      // Ignore malformed or unrelated events and continue to the completion item.
+    }
+  }
+  const accumulated = parseRelayedAgentArguments(argumentDeltas);
+  if (accumulated !== undefined) return accumulated;
+  return undefined;
+}
+
+function agentPayloadCacheKey(encrypted) {
+  return createHash("sha256").update(encrypted).digest("base64url");
+}
+
+function cachedAgentPayload(encrypted) {
+  const key = agentPayloadCacheKey(encrypted);
+  const entry = agentPayloadCache.get(key);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now()) {
+    agentPayloadCache.delete(key);
+    agentPayloadCacheBytes -= entry.bytes;
+    return undefined;
+  }
+  agentPayloadCache.delete(key);
+  agentPayloadCache.set(key, entry);
+  return entry.plaintext;
+}
+
+function rememberAgentPayload(encrypted, plaintext) {
+  const key = agentPayloadCacheKey(encrypted);
+  const existing = agentPayloadCache.get(key);
+  if (existing) agentPayloadCacheBytes -= existing.bytes;
+  const bytes = Buffer.byteLength(plaintext, "utf8");
+  agentPayloadCache.set(key, {
+    plaintext,
+    bytes,
+    expiresAt: Date.now() + AGENT_PAYLOAD_CACHE_TTL_MS,
+  });
+  agentPayloadCacheBytes += bytes;
+  while (
+    agentPayloadCache.size > AGENT_PAYLOAD_CACHE_MAX_ENTRIES ||
+    agentPayloadCacheBytes > AGENT_PAYLOAD_CACHE_MAX_BYTES
+  ) {
+    const oldestKey = agentPayloadCache.keys().next().value;
+    const oldest = agentPayloadCache.get(oldestKey);
+    agentPayloadCache.delete(oldestKey);
+    agentPayloadCacheBytes -= oldest?.bytes || 0;
+  }
+}
+
+async function relayEncryptedAgentPayload(request, item, encrypted, signal) {
+  const cached = cachedAgentPayload(encrypted);
+  if (cached !== undefined) return cached;
+  const body = {
+    model: nativeAgentRelayModel(),
+    stream: true,
+    store: false,
+    instructions:
+      "You are a transport relay. Do not execute or answer the delegated task. " +
+      "Call relay_external_agent_payload exactly once with the exact plaintext after the " +
+      "Payload: label in the supplied collaboration message. Preserve every character.",
+    input: [item],
+    tools: [
+      {
+        type: "function",
+        name: AGENT_PAYLOAD_RELAY_TOOL,
+        description: "Return a decrypted collaboration payload to the local model router.",
+        parameters: {
+          type: "object",
+          properties: { payload: { type: "string" } },
+          required: ["payload"],
+          additionalProperties: false,
+        },
+        strict: true,
+      },
+    ],
+    tool_choice: { type: "function", name: AGENT_PAYLOAD_RELAY_TOOL },
+  };
+  const upstream = await fetch(nativeTarget("/responses", ""), {
+    method: "POST",
+    headers: { ...nativeHeaders(request), Accept: "text/event-stream" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  const bytes = Buffer.from(await upstream.arrayBuffer());
+  if (!upstream.ok) {
+    const error = new Error(
+      `Native collaboration payload relay failed with HTTP ${upstream.status}.`,
+    );
+    error.status = 502;
+    throw error;
+  }
+  if (bytes.length > 4 * 1024 * 1024) {
+    const error = new Error("Native collaboration payload relay response is too large.");
+    error.status = 502;
+    throw error;
+  }
+  let plaintext;
+  const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
+  const looksLikeSse = /^(?:event|data):/m.test(bytes.toString("utf8"));
+  if (contentType.includes("text/event-stream") || looksLikeSse) {
+    plaintext = parseRelayedAgentPayloadSse(bytes);
+  } else {
+    try {
+      plaintext = parseRelayedAgentPayload(JSON.parse(bytes.toString("utf8")));
+    } catch {
+      // The error below intentionally avoids logging the opaque collaboration body.
+    }
+  }
+  if (plaintext === undefined) {
+    const error = new Error("Native collaboration payload relay omitted the task payload.");
+    error.status = 502;
+    throw error;
+  }
+  rememberAgentPayload(encrypted, plaintext);
+  return plaintext;
+}
+
+async function normalizeRoutedAgentInput(request, input, signal) {
+  const normalized = normalizeRoutedInput(input);
+  if (!Array.isArray(normalized)) return normalized;
+  const output = [];
+  for (const item of normalized) {
+    const payload = encryptedAgentPayload(item);
+    if (!payload) {
+      output.push(item);
+      continue;
+    }
+    const plaintext = payload.native
+      ? await relayEncryptedAgentPayload(request, item, payload.content, signal)
+      : payload.content;
+    output.push({
+      ...item,
+      content: [
+        ...item.content.filter((part) => part?.type !== "encrypted_content"),
+        { type: "input_text", text: plaintext },
+      ],
+    });
+  }
+  return output;
 }
 
 // OpenAI-issued reasoning `encrypted_content` is an opaque token (Fernet-style,
@@ -513,19 +825,14 @@ async function handleRoutedCompaction(response, payload, route, signal, v2) {
 }
 
 async function handleModels(response) {
-  const catalog = catalogSnapshot();
-  const data = catalog.models.map((model) => ({
+  const data = catalogModels().map((model) => ({
     id: model.slug,
     object: "model",
     owned_by: MODEL_BY_SLUG.has(model.slug)
       ? providerForModel(MODEL_BY_SLUG.get(model.slug)).ownedBy
       : "openai",
   }));
-  writeJson(response, 200, {
-    object: "list",
-    ...(catalog.catalogUpdatedAt ? { catalogUpdatedAt: catalog.catalogUpdatedAt } : {}),
-    data,
-  });
+  writeJson(response, 200, { object: "list", data });
 }
 
 function requireCodexTransport(request, response) {
@@ -580,8 +887,10 @@ async function handleResponses(request, response, requestUrl) {
       });
       return;
     }
+    // Activity and usage attribute protocol variants to their canonical
+    // family so the tray Island and graphs show one provider per subscription.
     activity.setRoute({
-      provider: route?.provider || "openai",
+      provider: route ? canonicalProviderId(route.provider) : "openai",
       model: route?.slug || requestedModel || undefined,
       ...activityMetadataFromHeaders(request.headers),
     });
@@ -612,10 +921,15 @@ async function handleResponses(request, response, requestUrl) {
     let headers;
     let routedBody;
     if (route) {
+      const input = await normalizeRoutedAgentInput(
+        request,
+        payload.input,
+        controller.signal,
+      );
       const routed = {
         ...payload,
         model: route.gatewayModel,
-        input: normalizeRoutedInput(payload.input),
+        input,
       };
       target = `${GATEWAY_BASE}/responses`;
       headers = routedHeaders();
@@ -637,14 +951,16 @@ async function handleResponses(request, response, requestUrl) {
       body: routedBody,
       signal: controller.signal,
     });
-    const usageTransform = route
-      ? new ResponseUsageTransform(upstream.headers.get("content-type") || "")
-      : undefined;
+    // Native OpenAI responses carry the same `usage` shape as routed ones, so
+    // meter both paths; without this, native traffic reports zero tokens.
+    const usageTransform = new ResponseUsageTransform(
+      upstream.headers.get("content-type") || "",
+    );
     await pipeResponse(upstream, response, HOP_BY_HOP_HEADERS, usageTransform);
     const usage = usageTransform?.tokenUsage();
     recordUsageEvent({
       model: route?.slug || requestedModel,
-      provider: route?.provider || "openai",
+      provider: route ? canonicalProviderId(route.provider) : "openai",
       status: upstream.status,
       durationMs: Date.now() - startedAt,
       ...usage,

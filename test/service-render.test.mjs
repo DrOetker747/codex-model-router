@@ -41,20 +41,6 @@ test("background service definitions render for macOS, Linux, and Windows", () =
     assert.match(windows, /@echo off\r?\n/);
     assert.match(windows, /set "CODEX_ROUTER_STATE_DIR=/);
     assert.match(windows, /litellm|start\.mjs/);
-
-    const cursorLaunchd = render("service-macos.mjs", "darwin", testRoot, "cursor");
-    assert.match(cursorLaunchd, /<string>io\.github\.codex-router\.cursor<\/string>/);
-    assert.match(cursorLaunchd, /<string>cursor<\/string>/);
-    assert.match(cursorLaunchd, /<string>4104<\/string>/);
-
-    const cursorSystemd = render("service-linux.mjs", "linux", testRoot, "cursor");
-    assert.match(cursorSystemd, /Description=Cursor Router/);
-    assert.match(cursorSystemd, /Environment="MODEL_ROUTER_TARGET=cursor"/);
-    assert.match(cursorSystemd, /MODEL_ROUTER_PORT=4104/);
-
-    const cursorWindows = render("service-windows.mjs", "win32", testRoot, "cursor");
-    assert.match(cursorWindows, /set "MODEL_ROUTER_TARGET=cursor"/);
-    assert.match(cursorWindows, /set "MODEL_ROUTER_PORT=4104"/);
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }

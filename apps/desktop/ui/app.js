@@ -36,6 +36,7 @@ function startPanel() {
     busyProvider: null,
     loginFreeBusy: false,
     keyProvider: null,
+    removeProvider: null,
     toastTimer: null,
   };
 
@@ -71,6 +72,12 @@ function startPanel() {
     keyInput: document.getElementById("api-key"),
     closeDialog: document.getElementById("close-dialog"),
     cancelKey: document.getElementById("cancel-key"),
+    removeDialog: document.getElementById("remove-dialog"),
+    removeTitle: document.getElementById("remove-dialog-title"),
+    removeBody: document.getElementById("remove-dialog-body"),
+    removeForm: document.getElementById("remove-form"),
+    closeRemoveDialog: document.getElementById("close-remove-dialog"),
+    cancelRemove: document.getElementById("cancel-remove"),
   };
 
   elements.tabs.forEach((button) => {
@@ -94,8 +101,16 @@ function startPanel() {
     elements.keyInput.value = "";
     state.keyProvider = null;
   });
+  elements.removeForm.addEventListener("submit", removeKey);
+  elements.closeRemoveDialog.addEventListener("click", closeRemoveDialog);
+  elements.cancelRemove.addEventListener("click", closeRemoveDialog);
+  elements.removeDialog.addEventListener("close", () => {
+    state.removeProvider = null;
+  });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !elements.keyDialog.open) call("hide_panel");
+    if (event.key === "Escape" && !elements.keyDialog.open && !elements.removeDialog.open) {
+      call("hide_panel");
+    }
   });
 
   if (!invoke) {
@@ -267,10 +282,16 @@ function startPanel() {
       actionLabel = provider.configured ? "Replace key" : "Add key";
     }
     if (isBusy) detail = "Working…";
+    const canRemove = provider.kind === "api" && provider.configured;
     return `<article class="provider-row">
       <div><strong>${escapeHtml(provider.displayName)}</strong><small>${escapeHtml(detail)}</small></div>
       <div class="provider-actions">
         <button class="mini-button" type="button" data-action="${action}" data-provider="${escapeHtml(provider.id)}"${isBusy ? " disabled" : ""}>${actionLabel}</button>
+        ${
+          canRemove
+            ? `<button class="mini-button danger" type="button" data-action="remove-key" data-provider="${escapeHtml(provider.id)}" aria-label="Remove ${escapeHtml(provider.displayName)} key"${isBusy ? " disabled" : ""}>Remove</button>`
+            : ""
+        }
         ${
           provider.configured
             ? `<label class="provider-check"><input type="checkbox" data-provider="${escapeHtml(provider.id)}" aria-label="Enable ${escapeHtml(provider.displayName)}"${enabled ? " checked" : ""}${isBusy ? " disabled" : ""}></label>`
@@ -303,6 +324,17 @@ function startPanel() {
         : `Add ${setup?.displayName || "API"} key`;
       elements.keyDialog.showModal();
       requestAnimationFrame(() => elements.keyInput.focus());
+      return;
+    }
+
+    if (action === "remove-key") {
+      const setup = state.providerSetup?.providers?.find((item) => item.id === provider);
+      const name = setup?.displayName || "this provider";
+      state.removeProvider = provider;
+      elements.removeTitle.textContent = `Remove ${name} key`;
+      elements.removeBody.textContent = `The stored ${name} key is deleted from this Mac and ${name} is hidden from the Codex model picker. You can add a new key at any time.`;
+      elements.removeDialog.showModal();
+      requestAnimationFrame(() => elements.cancelRemove.focus());
       return;
     }
 
@@ -400,9 +432,32 @@ function startPanel() {
     }
   }
 
+  async function removeKey(event) {
+    event.preventDefault();
+    const provider = state.removeProvider;
+    closeRemoveDialog();
+    if (!provider) return;
+    state.busyProvider = provider;
+    renderProviders();
+    try {
+      const result = await call("remove_api_key", { provider });
+      showToast(removalMessage(result?.removal));
+      await refreshPanel({ quiet: true });
+    } catch (error) {
+      showToast(errorMessage(error), true);
+    } finally {
+      state.busyProvider = null;
+      renderProviders();
+    }
+  }
+
   function closeKeyDialog() {
     elements.keyInput.value = "";
     if (elements.keyDialog.open) elements.keyDialog.close();
+  }
+
+  function closeRemoveDialog() {
+    if (elements.removeDialog.open) elements.removeDialog.close();
   }
 
   function showToast(message, isError = false) {
@@ -606,6 +661,19 @@ function svgElement(name, attributes) {
 function call(command, args) {
   if (!invoke) return Promise.reject(new Error("Desktop bridge unavailable."));
   return invoke(command, args);
+}
+
+// A key can also come from the macOS Keychain or the environment, which the
+// router cannot delete, so say so rather than reporting a clean disconnect.
+function removalMessage(removal) {
+  const name = removal?.displayName || "The provider";
+  if (removal?.stillConfigured) {
+    return `${name} key removed from local storage, but a key is still active from ${removal.remainingSource || "another source"}.`;
+  }
+  if (removal && removal.removedFiles === 0) {
+    return `No stored ${name} key was found.`;
+  }
+  return `${name} key removed. Restart Codex to refresh its model picker.`;
 }
 
 function errorMessage(error) {

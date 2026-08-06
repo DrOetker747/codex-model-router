@@ -6,6 +6,7 @@ import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
 import { credentialStatus } from "./provider-credentials.mjs";
 import {
+  canonicalProviderId,
   disableProvider,
   enableProvider,
   readProviderSelection,
@@ -16,22 +17,32 @@ import {
   targetPickerName,
 } from "./target-integration.mjs";
 
+// One entry per OAuth vendor keeps adding a provider a registry-plus-map
+// change instead of another branch in a nested conditional.
+const SIGN_IN_STATUS = Object.freeze({
+  "kimi-oauth": { status: kimiOAuthStatus, setup: "run `kimi login`" },
+  "grok-oauth": { status: grokOAuthStatus, setup: "run `grok login --oauth`" },
+});
+
 function configured(provider) {
-  return provider.kind === "oauth"
-    ? provider.id === "kimi-oauth"
-      ? kimiOAuthStatus().configured
-      : provider.id === "grok-oauth" && grokOAuthStatus().configured
-    : credentialStatus(provider, { persistent: true }).configured;
+  if (provider.kind === "oauth") {
+    return Boolean(SIGN_IN_STATUS[provider.id]?.status().configured);
+  }
+  return credentialStatus(provider, { persistent: true }).configured;
 }
 
 function list() {
   const selected = new Set(readProviderSelection());
-  return [...PROVIDERS.values()].map((provider) => ({
-    id: provider.id,
-    name: provider.displayName,
-    visible: selected.has(provider.id),
-    configured: configured(provider),
-  }));
+  // Protocol variants follow their parent's selection and credential, so the
+  // catalog shows one row per family instead of three opencode Go entries.
+  return [...PROVIDERS.values()]
+    .filter((provider) => !provider.variantOf)
+    .map((provider) => ({
+      id: provider.id,
+      name: provider.displayName,
+      visible: selected.has(provider.id),
+      configured: configured(provider),
+    }));
 }
 
 function main() {
@@ -50,15 +61,15 @@ function main() {
     }
     return;
   }
-  const provider = PROVIDERS.get(providerId);
+  // Toggling a protocol variant toggles its whole family, so report the
+  // canonical provider the user actually changed.
+  const provider = PROVIDERS.get(canonicalProviderId(providerId ?? ""));
   if (!provider || !["enable", "disable"].includes(command)) {
     throw new Error("Usage: providers [list [--json]|enable ID|disable ID]");
   }
   if (command === "enable" && !configured(provider)) {
     const setup = provider.kind === "oauth"
-      ? provider.id === "grok-oauth"
-        ? "run `grok login --oauth`"
-        : "run `kimi login`"
+      ? SIGN_IN_STATUS[provider.id]?.setup || "sign in with the provider CLI"
       : `run \`${targetCli(`provider-key ${provider.id} set`)}\``;
     throw new Error(`${provider.displayName} is not configured; ${setup} first.`);
   }

@@ -1,9 +1,9 @@
 # Security model
 
-Codex and Cursor targets share source code but not their trust roots. Each has a
-separate caller key, internal key, state directory, provider selection, API-key
-files, service identity, and port range. Kimi OAuth is the intentional
-exception: both targets may reuse the official Kimi CLI session under
+The router has its own trust root separate from Codex's: a random caller key,
+an internal service key, a private state directory, per-provider API-key
+files, and a dedicated service identity and port range. Kimi OAuth is the
+intentional exception: the router reuses the official Kimi CLI session under
 `~/.kimi-code`.
 
 ## Credential separation
@@ -29,10 +29,7 @@ protected or redacted.
 
 ## Local secret storage
 
-Codex state lives under `$CODEX_HOME/codex-router` by default. Cursor state uses
-`~/.local/state/model-router/cursor` on POSIX or
-`%LOCALAPPDATA%\model-router\cursor` on Windows. Each target has its own copy of
-the applicable files below; the native/merged catalogs exist only for Codex:
+Router state lives under `$CODEX_HOME/codex-router` by default:
 
 | File | Purpose | Mode |
 | --- | --- | --- |
@@ -50,9 +47,8 @@ the applicable files below; the native/merged catalogs exist only for Codex:
 | `migrations/` | Protected config/service rollback snapshots | private |
 | `support/` | Locally generated diagnostic bundles | `600` files |
 
-The Codex target can read provider keys from process environment or compatible
-legacy macOS Keychain services; the Cursor target does not reuse those Codex
-Keychain entries. The interactive helper writes target-specific protected local
+The router can read provider keys from process environment or compatible
+legacy macOS Keychain services. The interactive helper writes protected local
 files so the per-user background service can access them without copying
 secrets into its service definition. Files use mode `600` on POSIX systems. On
 Windows, the helper removes inherited ACL entries and grants access only to the
@@ -60,21 +56,20 @@ current user SID.
 
 Installers deliberately do not copy API-key environment variables into launchd,
 systemd, or Task Scheduler definitions. Environment-only credentials work for a
-foreground router process, but background setup requires a target-specific
-protected file. Compatible legacy Keychain lookup is a Codex-only migration
-path.
+foreground router process, but background setup requires a protected file.
+Compatible legacy Keychain lookup is a migration path only.
 
 Kimi OAuth remains under `$KIMI_CODE_HOME` or `~/.kimi-code`; Codex Router does
 not copy it into its own state directory.
 
-Never commit either state directory, a provider key, a Kimi credential file, or
+Never commit the state directory, a provider key, a Kimi credential file, or
 a generated config from a live installation.
 
 ## Network boundary
 
 The router, LiteLLM gateway, OAuth forwarder, and API forwarder bind only to
-`127.0.0.1`. Every model route requires a random caller capability: Codex carries
-it in the managed URL and Cursor sends it as the configured gateway credential.
+`127.0.0.1`. Every model route requires a random caller capability, which Codex carries
+in the managed URL.
 Internal gateway and forwarder routes require a separate random service key,
 and credential-detail health responses are authenticated.
 Model requests must use JSON; requests with browser-origin headers are rejected,

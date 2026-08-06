@@ -371,65 +371,108 @@
       }
     },
     {
+      "id": "meta",
+      "displayName": "Meta API",
+      "kind": "openai-compatible",
+      "ownedBy": "meta",
+      "protocol": "openai-responses",
+      "baseUrl": "https://api.meta.ai/v1",
+      "baseUrlEnv": "META_BASE_URL",
+      "credential": {
+        "environment": [
+          "META_API_KEY"
+        ],
+        "file": "meta-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-meta"
+        ],
+        "prompt": "Meta API key"
+      }
+    },
+    {
       "id": "opencode-go",
-      "displayName": "OpenCode Go",
+      "displayName": "opencode Go/Zen",
       "kind": "openai-compatible",
       "ownedBy": "opencode",
       "baseUrl": "https://opencode.ai/zen/go/v1",
       "baseUrlEnv": "OPENCODE_GO_BASE_URL",
-      "modelDiscovery": {
-        "endpoint": "/models"
-      },
-      "anthropicModelPrefixes": [
-        "minimax-",
-        "qwen"
-      ],
-      "responsesModelPrefixes": [
-        "gpt-"
-      ],
       "credential": {
         "environment": [
+          "OPENCODE_API_KEY",
           "OPENCODE_GO_API_KEY"
         ],
         "file": "opencode-go-api-key.secret",
-        "fallbackFiles": [
-          "opencode-go-api-key-backup.secret"
-        ],
         "legacyFiles": [],
         "keychainServices": [
           "codex-router-opencode-go"
         ],
-        "prompt": "OpenCode Go API key"
+        "prompt": "opencode API key"
       }
     },
     {
-      "id": "opencode-free",
-      "displayName": "OpenCode Free",
+      "id": "opencode-go-messages",
+      "displayName": "opencode Messages",
       "kind": "openai-compatible",
       "ownedBy": "opencode",
-      "baseUrl": "https://opencode.ai/zen/v1",
-      "baseUrlEnv": "OPENCODE_FREE_BASE_URL",
-      "modelDiscovery": {
-        "endpoint": "/models"
-      },
-      "modelAllowPatterns": [
-        "^big-pickle$",
-        "-free$"
-      ],
-      "pickerPolicy": "hide-all",
+      "variantOf": "opencode-go",
+      "protocol": "anthropic",
+      "baseUrl": "https://opencode.ai/zen/go/v1",
+      "baseUrlEnv": "OPENCODE_GO_BASE_URL",
       "credential": {
         "environment": [
+          "OPENCODE_API_KEY",
           "OPENCODE_GO_API_KEY"
         ],
         "file": "opencode-go-api-key.secret",
-        "fallbackFiles": [
-          "opencode-go-api-key-backup.secret"
-        ],
         "legacyFiles": [],
         "keychainServices": [
           "codex-router-opencode-go"
         ],
-        "prompt": "OpenCode API key"
+        "prompt": "opencode API key"
+      }
+    },
+    {
+      "id": "opencode-go-responses",
+      "displayName": "opencode Responses",
+      "kind": "openai-compatible",
+      "ownedBy": "opencode",
+      "variantOf": "opencode-go",
+      "protocol": "openai-responses",
+      "baseUrl": "https://opencode.ai/zen/go/v1",
+      "baseUrlEnv": "OPENCODE_GO_BASE_URL",
+      "credential": {
+        "environment": [
+          "OPENCODE_API_KEY",
+          "OPENCODE_GO_API_KEY"
+        ],
+        "file": "opencode-go-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-opencode-go"
+        ],
+        "prompt": "opencode API key"
+      }
+    },
+    {
+      "id": "opencode-zen",
+      "displayName": "opencode Zen",
+      "kind": "openai-compatible",
+      "ownedBy": "opencode",
+      "variantOf": "opencode-go",
+      "baseUrl": "https://opencode.ai/zen/v1",
+      "baseUrlEnv": "OPENCODE_ZEN_BASE_URL",
+      "credential": {
+        "environment": [
+          "OPENCODE_API_KEY",
+          "OPENCODE_GO_API_KEY"
+        ],
+        "file": "opencode-go-api-key.secret",
+        "legacyFiles": [],
+        "keychainServices": [
+          "codex-router-opencode-go"
+        ],
+        "prompt": "opencode API key"
       }
     }
   ],
@@ -440,6 +483,7 @@
       "upstreamModel": "kimi-for-coding",
       "provider": "kimi-oauth",
       "listed": true,
+      "multiAgentVersion": "v2",
       "displayName": "K2.7 Coding (OAuth)",
       "description": "Kimi K2.7 Coding using the existing Kimi Code CLI OAuth session.",
       "priority": 2,
@@ -465,9 +509,10 @@
       "upstreamModel": "kimi-for-coding-highspeed",
       "provider": "kimi-oauth",
       "listed": true,
+      "multiAgentVersion": "v2",
       "displayName": "K2.7 Coding Highspeed (OAuth)",
       "description": "Kimi K2.7 Coding Highspeed using the existing Kimi Code CLI OAuth session.",
-      "priority": 3,
+      "priority": 4,
       "defaultEffort": "high",
       "reasoningLevels": [
         {
@@ -490,9 +535,10 @@
       "upstreamModel": "k3",
       "provider": "kimi-oauth",
       "listed": true,
+      "multiAgentVersion": "v2",
       "displayName": "Kimi K3 (OAuth)",
       "description": "Kimi K3 using the existing Kimi Code CLI OAuth session.",
-      "priority": 4,
+      "priority": 3,
       "defaultEffort": "high",
       "reasoningLevels": [
         {
@@ -523,14 +569,23 @@
       "upstreamModel": "kimi-k3",
       "provider": "kimi-api",
       "listed": true,
+      "multiAgentVersion": "v2",
       "displayName": "Kimi K3 (API)",
       "description": "Kimi K3 using a separately billed Kimi Platform API key.",
       "priority": 5,
       "defaultEffort": "max",
       "reasoningLevels": [
         {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Balanced deep reasoning"
+        },
+        {
           "effort": "max",
-          "description": "Maximum reasoning required by the Kimi K3 API"
+          "description": "Maximum reasoning depth"
         }
       ],
       "contextWindow": 1048576,
@@ -543,31 +598,6 @@
       "compHash": "kimi-api-k3-v2"
     },
     {
-      "slug": "opencode-go/kimi-k3",
-      "gatewayModel": "opencode-go-kimi-k3",
-      "upstreamModel": "kimi-k3",
-      "provider": "opencode-go",
-      "listed": true,
-      "displayName": "Kimi K3 (OpenCode Go)",
-      "description": "Kimi K3 through the OpenCode Go OpenAI-compatible API with tool calls and a 1M context window.",
-      "priority": 6,
-      "defaultEffort": "max",
-      "reasoningLevels": [
-        {
-          "effort": "max",
-          "description": "Maximum reasoning for agentic coding"
-        }
-      ],
-      "contextWindow": 1048576,
-      "autoCompact": 900000,
-      "inputModalities": [
-        "text",
-        "image"
-      ],
-      "requestProfile": "kimi-k3",
-      "compHash": "opencode-go-kimi-k3-v1"
-    },
-    {
       "slug": "deepseek/deepseek-v4-flash",
       "gatewayModel": "deepseek-v4-flash",
       "upstreamModel": "deepseek-v4-flash",
@@ -578,6 +608,10 @@
       "priority": 6,
       "defaultEffort": "high",
       "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
         {
           "effort": "high",
           "description": "Deep reasoning"
@@ -645,6 +679,7 @@
       "upstreamModel": "grok-4.5",
       "provider": "grok-oauth",
       "listed": true,
+      "multiAgentVersion": "v2",
       "displayName": "Grok 4.5 (OAuth)",
       "description": "Grok 4.5 through the official Grok CLI OAuth session with agentic coding, tool calls, and hosted web/X search.",
       "priority": 1,
@@ -678,6 +713,7 @@
       "upstreamModel": "grok-4.5",
       "provider": "grok-api",
       "listed": true,
+      "multiAgentVersion": "v2",
       "displayName": "Grok 4.5 (API)",
       "description": "Grok 4.5 through the separately billed xAI API with agentic coding, tools, and a 500k context window.",
       "priority": 8,
@@ -717,8 +753,24 @@
       "defaultEffort": "high",
       "reasoningLevels": [
         {
+          "effort": "low",
+          "description": "Minimal thinking, fastest responses"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced adaptive thinking"
+        },
+        {
           "effort": "high",
           "description": "Adaptive deep reasoning for agentic work"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Extended thinking, recommended for coding"
+        },
+        {
+          "effort": "max",
+          "description": "Unconstrained thinking on every response"
         }
       ],
       "contextWindow": 1048576,
@@ -739,7 +791,7 @@
       "displayName": "GLM-5.2 (Coding Plan)",
       "description": "GLM-5.2 through the Z.ai GLM Coding Plan subscription with agentic coding, tool calls, and a 1M context window.",
       "priority": 10,
-      "defaultEffort": "high",
+      "defaultEffort": "max",
       "reasoningLevels": [
         {
           "effort": "high",
@@ -771,11 +823,7 @@
       "reasoningLevels": [
         {
           "effort": "high",
-          "description": "Deep reasoning with thinking enabled"
-        },
-        {
-          "effort": "max",
-          "description": "Maximum reasoning depth"
+          "description": "Adaptive thinking (effort control is not supported)"
         }
       ],
       "contextWindow": 204800,
@@ -794,7 +842,7 @@
       "listed": true,
       "displayName": "Qwen3.7 Max (Plan)",
       "description": "Qwen3.7 Max through an Alibaba Model Studio Token or Coding Plan subscription for deep agentic coding.",
-      "priority": 12,
+      "priority": 14,
       "defaultEffort": "high",
       "reasoningLevels": [
         {
@@ -818,7 +866,7 @@
       "listed": true,
       "displayName": "Qwen3.7 Plus (Plan)",
       "description": "Qwen3.7 Plus through an Alibaba Model Studio Token or Coding Plan subscription; balanced speed and reasoning.",
-      "priority": 13,
+      "priority": 15,
       "defaultEffort": "high",
       "reasoningLevels": [
         {
@@ -835,6 +883,165 @@
       "compHash": "qwen-plan-qwen3-7-plus-v1"
     },
     {
+      "slug": "qwen-plan/qwen3.8-max",
+      "gatewayModel": "qwen-plan-qwen3-8-max",
+      "upstreamModel": "qwen3.8-max",
+      "provider": "qwen-plan",
+      "listed": true,
+      "displayName": "Qwen3.8 Max (Plan)",
+      "description": "Qwen3.8 Max through an Alibaba Model Studio Token or Coding Plan subscription; the newest flagship tier with vision input.",
+      "priority": 12,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Adaptive deep reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "qwen-plan",
+      "compHash": "qwen-plan-qwen3-8-max-v1"
+    },
+    {
+      "slug": "qwen-plan/qwen3.8-max-preview",
+      "gatewayModel": "qwen-plan-qwen3-8-max-preview",
+      "upstreamModel": "qwen3.8-max-preview",
+      "provider": "qwen-plan",
+      "listed": true,
+      "displayName": "Qwen3.8 Max Preview (Plan)",
+      "description": "Preview build of Qwen3.8 Max through an Alibaba Model Studio Token or Coding Plan subscription; newest capabilities, less settled behaviour.",
+      "priority": 13,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Adaptive deep reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "qwen-plan",
+      "compHash": "qwen-plan-qwen3-8-max-preview-v1"
+    },
+    {
+      "slug": "qwen-plan/qwen3.6-flash",
+      "gatewayModel": "qwen-plan-qwen3-6-flash",
+      "upstreamModel": "qwen3.6-flash",
+      "provider": "qwen-plan",
+      "listed": true,
+      "displayName": "Qwen3.6 Flash (Plan)",
+      "description": "Qwen3.6 Flash through an Alibaba Model Studio Token or Coding Plan subscription; fastest tier with vision input for high-volume work.",
+      "priority": 16,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Adaptive reasoning tuned for speed"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "requestProfile": "qwen-plan",
+      "compHash": "qwen-plan-qwen3-6-flash-v1"
+    },
+    {
+      "slug": "qwen-plan/deepseek-v4-pro",
+      "gatewayModel": "qwen-plan-deepseek-v4-pro",
+      "upstreamModel": "deepseek-v4-pro",
+      "provider": "qwen-plan",
+      "listed": true,
+      "displayName": "DeepSeek V4 Pro (Qwen Plan)",
+      "description": "DeepSeek V4 Pro served through an Alibaba Model Studio Token or Coding Plan subscription rather than a separate DeepSeek API key.",
+      "priority": 17,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "qwen-plan",
+      "compHash": "qwen-plan-deepseek-v4-pro-v1"
+    },
+    {
+      "slug": "qwen-plan/deepseek-v4-flash-0731",
+      "gatewayModel": "qwen-plan-deepseek-v4-flash-0731",
+      "upstreamModel": "deepseek-v4-flash-0731",
+      "provider": "qwen-plan",
+      "listed": true,
+      "displayName": "DeepSeek V4 Flash (Qwen Plan)",
+      "description": "DeepSeek V4 Flash (0731) served through an Alibaba Model Studio Token or Coding Plan subscription; faster and cheaper than V4 Pro.",
+      "priority": 18,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "qwen-plan",
+      "compHash": "qwen-plan-deepseek-v4-flash-0731-v1"
+    },
+    {
+      "slug": "qwen-plan/glm-5.2",
+      "gatewayModel": "qwen-plan-glm-5-2",
+      "upstreamModel": "glm-5.2",
+      "provider": "qwen-plan",
+      "listed": true,
+      "displayName": "GLM-5.2 (Qwen Plan)",
+      "description": "Zhipu GLM-5.2 served through an Alibaba Model Studio Token or Coding Plan subscription rather than a separate Z.ai plan key.",
+      "priority": 19,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "requestProfile": "qwen-plan",
+      "compHash": "qwen-plan-glm-5-2-v1"
+    },
+    {
       "slug": "ollama-cloud/glm-5.2",
       "gatewayModel": "ollama-cloud-glm-5-2",
       "upstreamModel": "glm-5.2",
@@ -842,7 +1049,7 @@
       "listed": true,
       "displayName": "GLM-5.2 (Ollama Cloud)",
       "description": "GLM-5.2 hosted on Ollama Cloud with agentic coding and a 1M context window.",
-      "priority": 14,
+      "priority": 20,
       "defaultEffort": "high",
       "reasoningLevels": [
         {
@@ -866,7 +1073,7 @@
       "listed": true,
       "displayName": "Kimi K2.7 Code (Ollama Cloud)",
       "description": "Kimi K2.7 Code hosted on Ollama Cloud for coding agents with a 256k context window.",
-      "priority": 15,
+      "priority": 21,
       "defaultEffort": "high",
       "reasoningLevels": [
         {
@@ -890,7 +1097,7 @@
       "listed": true,
       "displayName": "MiniMax M3 (Ollama Cloud)",
       "description": "MiniMax M3 hosted on Ollama Cloud for coding with a 512k context window.",
-      "priority": 16,
+      "priority": 22,
       "defaultEffort": "high",
       "reasoningLevels": [
         {
@@ -914,7 +1121,7 @@
       "listed": true,
       "displayName": "DeepSeek V4 Pro (Ollama Cloud)",
       "description": "DeepSeek V4 Pro hosted on Ollama Cloud with reasoning and a 512k context window.",
-      "priority": 17,
+      "priority": 23,
       "defaultEffort": "high",
       "reasoningLevels": [
         {
@@ -938,7 +1145,7 @@
       "listed": true,
       "displayName": "MiniMax M3",
       "description": "MiniMax M3 using a MiniMax Token Plan API key.",
-      "priority": 18,
+      "priority": 24,
       "defaultEffort": "high",
       "reasoningLevels": [
         {
@@ -954,6 +1161,791 @@
       ],
       "requestProfile": "minimax-m3",
       "compHash": "minimax-token-plan-minimax-m3-v1"
+    },
+    {
+      "slug": "opencode-go/grok-4.5",
+      "gatewayModel": "opencode-go-grok-4-5",
+      "upstreamModel": "grok-4.5",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "Grok 4.5 (opencode Go)",
+      "description": "Grok 4.5 through the opencode Go subscription.",
+      "priority": 30,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 500000,
+      "autoCompact": 440000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-grok-4-5-v1"
+    },
+    {
+      "slug": "opencode-go/glm-5.2",
+      "gatewayModel": "opencode-go-glm-5-2",
+      "upstreamModel": "glm-5.2",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "GLM-5.2 (opencode Go)",
+      "description": "GLM-5.2 through the opencode Go subscription.",
+      "priority": 31,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-glm-5-2-v1"
+    },
+    {
+      "slug": "opencode-go/glm-5.1",
+      "gatewayModel": "opencode-go-glm-5-1",
+      "upstreamModel": "glm-5.1",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "GLM-5.1 (opencode Go)",
+      "description": "GLM-5.1 through the opencode Go subscription.",
+      "priority": 32,
+      "upgradeTo": {
+        "model": "opencode-go/glm-5.2",
+        "markdown": "GLM-5.2 is available on your opencode Go subscription\n\n{model_to} is the next GLM generation after {model_from}, with the same 1M-token context window plus a Max reasoning tier for harder agent work. Accept to switch your default model; GLM-5.1 stays available in the picker."
+      },
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-glm-5-1-v1"
+    },
+    {
+      "slug": "opencode-go/kimi-k3",
+      "gatewayModel": "opencode-go-kimi-k3",
+      "upstreamModel": "kimi-k3",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "Kimi K3 (opencode Go)",
+      "description": "Kimi K3 through the opencode Go subscription.",
+      "priority": 33,
+      "defaultEffort": "max",
+      "reasoningLevels": [
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-kimi-k3-v1"
+    },
+    {
+      "slug": "opencode-go/kimi-k2.7-code",
+      "gatewayModel": "opencode-go-kimi-k2-7-code",
+      "upstreamModel": "kimi-k2.7-code",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "Kimi K2.7 Code (opencode Go)",
+      "description": "Kimi K2.7 Code through the opencode Go subscription.",
+      "priority": 34,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-kimi-k2-7-code-v1"
+    },
+    {
+      "slug": "opencode-go/kimi-k2.6",
+      "gatewayModel": "opencode-go-kimi-k2-6",
+      "upstreamModel": "kimi-k2.6",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "Kimi K2.6 (opencode Go)",
+      "description": "Kimi K2.6 through the opencode Go subscription.",
+      "priority": 35,
+      "upgradeTo": {
+        "model": "opencode-go/kimi-k3",
+        "markdown": "Kimi K3 is available on your opencode Go subscription\n\n{model_to} is Moonshot's successor to {model_from}, running at maximum reasoning effort with the same 256K-token context window. Accept to switch your default model; Kimi K2.6 stays available in the picker."
+      },
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-kimi-k2-6-v1"
+    },
+    {
+      "slug": "opencode-go/deepseek-v4-pro",
+      "gatewayModel": "opencode-go-deepseek-v4-pro",
+      "upstreamModel": "deepseek-v4-pro",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "DeepSeek V4 Pro (opencode Go)",
+      "description": "DeepSeek V4 Pro through the opencode Go subscription.",
+      "priority": 36,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-deepseek-v4-pro-v1"
+    },
+    {
+      "slug": "opencode-go/deepseek-v4-flash",
+      "gatewayModel": "opencode-go-deepseek-v4-flash",
+      "upstreamModel": "deepseek-v4-flash",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "DeepSeek V4 Flash (opencode Go)",
+      "description": "DeepSeek V4 Flash through the opencode Go subscription.",
+      "priority": 37,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-deepseek-v4-flash-v1"
+    },
+    {
+      "slug": "opencode-go/mimo-v2.5",
+      "gatewayModel": "opencode-go-mimo-v2-5",
+      "upstreamModel": "mimo-v2.5",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "MiMo-V2.5 (opencode Go)",
+      "description": "MiMo-V2.5 through the opencode Go subscription.",
+      "priority": 38,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 131072,
+      "autoCompact": 110000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-mimo-v2-5-v1"
+    },
+    {
+      "slug": "opencode-go/mimo-v2.5-pro",
+      "gatewayModel": "opencode-go-mimo-v2-5-pro",
+      "upstreamModel": "mimo-v2.5-pro",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "MiMo-V2.5-Pro (opencode Go)",
+      "description": "MiMo-V2.5-Pro through the opencode Go subscription.",
+      "priority": 39,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 131072,
+      "autoCompact": 110000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-mimo-v2-5-pro-v1"
+    },
+    {
+      "slug": "opencode-go-messages/minimax-m3",
+      "gatewayModel": "opencode-go-messages-minimax-m3",
+      "upstreamModel": "minimax-m3",
+      "provider": "opencode-go-messages",
+      "listed": true,
+      "displayName": "MiniMax M3 (opencode Go)",
+      "description": "MiniMax M3 through the opencode Go subscription using the Messages API.",
+      "priority": 40,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-messages-minimax-m3-v1"
+    },
+    {
+      "slug": "opencode-go-messages/minimax-m2.7",
+      "gatewayModel": "opencode-go-messages-minimax-m2-7",
+      "upstreamModel": "minimax-m2.7",
+      "provider": "opencode-go-messages",
+      "listed": true,
+      "displayName": "MiniMax M2.7 (opencode Go)",
+      "description": "MiniMax M2.7 through the opencode Go subscription using the Messages API.",
+      "priority": 41,
+      "upgradeTo": {
+        "model": "opencode-go-messages/minimax-m3",
+        "markdown": "MiniMax M3 is available on your opencode Go subscription\n\n{model_to} succeeds {model_from} and grows the context window from 128K to 1M tokens. Accept to switch your default model; MiniMax M2.7 stays available in the picker."
+      },
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 131072,
+      "autoCompact": 110000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-messages-minimax-m2-7-v1"
+    },
+    {
+      "slug": "opencode-go-messages/qwen3.8-max",
+      "gatewayModel": "opencode-go-messages-qwen3-8-max",
+      "upstreamModel": "qwen3.8-max",
+      "provider": "opencode-go-messages",
+      "listed": true,
+      "displayName": "Qwen3.8 Max (opencode Go)",
+      "description": "Qwen3.8 Max through the opencode Go subscription using the Messages API.",
+      "priority": 42,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-messages-qwen3-8-max-v1"
+    },
+    {
+      "slug": "opencode-go-messages/qwen3.7-max",
+      "gatewayModel": "opencode-go-messages-qwen3-7-max",
+      "upstreamModel": "qwen3.7-max",
+      "provider": "opencode-go-messages",
+      "listed": true,
+      "displayName": "Qwen3.7 Max (opencode Go)",
+      "description": "Qwen3.7 Max through the opencode Go subscription using the Messages API.",
+      "priority": 43,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-messages-qwen3-7-max-v1"
+    },
+    {
+      "slug": "opencode-go-messages/qwen3.7-plus",
+      "gatewayModel": "opencode-go-messages-qwen3-7-plus",
+      "upstreamModel": "qwen3.7-plus",
+      "provider": "opencode-go-messages",
+      "listed": true,
+      "displayName": "Qwen3.7 Plus (opencode Go)",
+      "description": "Qwen3.7 Plus through the opencode Go subscription using the Messages API.",
+      "priority": 44,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-messages-qwen3-7-plus-v1"
+    },
+    {
+      "slug": "opencode-go-messages/qwen3.6-plus",
+      "gatewayModel": "opencode-go-messages-qwen3-6-plus",
+      "upstreamModel": "qwen3.6-plus",
+      "provider": "opencode-go-messages",
+      "listed": true,
+      "displayName": "Qwen3.6 Plus (opencode Go)",
+      "description": "Qwen3.6 Plus through the opencode Go subscription using the Messages API.",
+      "priority": 45,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 262144,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-messages-qwen3-6-plus-v1"
+    },
+    {
+      "slug": "opencode-go/hy3",
+      "gatewayModel": "opencode-go-hy3",
+      "upstreamModel": "hy3",
+      "provider": "opencode-go",
+      "listed": true,
+      "displayName": "Hy3 (opencode Go)",
+      "description": "Hy3 through the opencode Go subscription.",
+      "priority": 46,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 131072,
+      "autoCompact": 110000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-hy3-v1"
+    },
+    {
+      "slug": "opencode-go-responses/gpt-5.6-luna",
+      "gatewayModel": "opencode-go-responses-gpt-5-6-luna",
+      "upstreamModel": "gpt-5.6-luna",
+      "provider": "opencode-go-responses",
+      "listed": true,
+      "displayName": "GPT 5.6 Luna (opencode Go)",
+      "description": "GPT 5.6 Luna through the opencode Go subscription using the Responses API.",
+      "priority": 47,
+      "defaultEffort": "medium",
+      "reasoningLevels": [
+        {
+          "effort": "low",
+          "description": "Faster reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Extended reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning depth"
+        }
+      ],
+      "contextWindow": 272000,
+      "autoCompact": 235000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-go-responses-gpt-5-6-luna-v1",
+      "supportsReasoningSummaries": true,
+      "defaultReasoningSummary": "auto"
+    },
+    {
+      "slug": "meta/muse-spark-1.2",
+      "gatewayModel": "meta-muse-spark-1-2",
+      "upstreamModel": "muse-spark-1.2",
+      "provider": "meta",
+      "listed": true,
+      "displayName": "Muse Spark 1.2 (Meta)",
+      "description": "Meta's coding-optimized agentic model with a 1M context window, through the Meta Model API using the Responses API.",
+      "availabilityNux": "Muse Spark 1.2 is now in your curated catalog: Meta's coding-optimized agentic model with a 1M-token context window, a minimal-to-xhigh effort ladder, and reasoning summaries.",
+      "priority": 48,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "minimal",
+          "description": "Fastest responses"
+        },
+        {
+          "effort": "low",
+          "description": "Quick reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Maximum reasoning"
+        }
+      ],
+      "supportsReasoningSummaries": true,
+      "defaultReasoningSummary": "auto",
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "compHash": "meta-muse-spark-1-2-v1"
+    },
+    {
+      "slug": "meta/muse-spark-1.2-contributor",
+      "gatewayModel": "meta-muse-spark-1-2-contributor",
+      "upstreamModel": "muse-spark-1.2-contributor",
+      "provider": "meta",
+      "listed": true,
+      "displayName": "Muse Spark 1.2 Contributor (Meta)",
+      "description": "Cheaper Contributor tier of Muse Spark 1.2; Meta may use its inputs and outputs for training. Same 1M context window through the Meta Model API using the Responses API.",
+      "priority": 49,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "minimal",
+          "description": "Fastest responses"
+        },
+        {
+          "effort": "low",
+          "description": "Quick reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Maximum reasoning"
+        }
+      ],
+      "supportsReasoningSummaries": true,
+      "defaultReasoningSummary": "auto",
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "compHash": "meta-muse-spark-1-2-contributor-v1"
+    },
+    {
+      "slug": "meta/muse-spark-1.1",
+      "gatewayModel": "meta-muse-spark-1-1",
+      "upstreamModel": "muse-spark-1.1",
+      "provider": "meta",
+      "listed": true,
+      "displayName": "Muse Spark 1.1 (Meta)",
+      "description": "Previous-generation Muse Spark coding model with a 1M context window, through the Meta Model API using the Responses API.",
+      "priority": 50,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "minimal",
+          "description": "Fastest responses"
+        },
+        {
+          "effort": "low",
+          "description": "Quick reasoning"
+        },
+        {
+          "effort": "medium",
+          "description": "Balanced reasoning"
+        },
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Maximum reasoning"
+        }
+      ],
+      "contextWindow": 1000000,
+      "autoCompact": 850000,
+      "inputModalities": [
+        "text",
+        "image"
+      ],
+      "compHash": "meta-muse-spark-1-1-v1"
+    },
+    {
+      "slug": "opencode-zen/deepseek-v4-flash-free",
+      "gatewayModel": "opencode-zen-deepseek-v4-flash-free",
+      "upstreamModel": "deepseek-v4-flash-free",
+      "provider": "opencode-zen",
+      "listed": true,
+      "displayName": "DeepSeek V4 Flash Free (opencode Zen)",
+      "description": "Free DeepSeek V4 Flash through OpenCode Zen; fast reasoning, tool calls, limited-time free tier.",
+      "priority": 60,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        },
+        {
+          "effort": "max",
+          "description": "Maximum reasoning"
+        }
+      ],
+      "contextWindow": 1048576,
+      "autoCompact": 900000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-zen-deepseek-v4-flash-free-v1"
+    },
+    {
+      "slug": "opencode-zen/mimo-v2.5-free",
+      "gatewayModel": "opencode-zen-mimo-v2-5-free",
+      "upstreamModel": "mimo-v2.5-free",
+      "provider": "opencode-zen",
+      "listed": true,
+      "displayName": "MiMo-V2.5 Free (opencode Zen)",
+      "description": "Free MiMo-V2.5 through OpenCode Zen; lightweight coding model, limited-time free tier.",
+      "priority": 61,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 131072,
+      "autoCompact": 110000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-zen-mimo-v2-5-free-v1"
+    },
+    {
+      "slug": "opencode-zen/laguna-s-2.1-free",
+      "gatewayModel": "opencode-zen-laguna-s-2-1-free",
+      "upstreamModel": "laguna-s-2.1-free",
+      "provider": "opencode-zen",
+      "listed": true,
+      "displayName": "Laguna S 2.1 Free (opencode Zen)",
+      "description": "Free Laguna S 2.1 through OpenCode Zen; limited-time free tier.",
+      "priority": 62,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 131072,
+      "autoCompact": 110000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-zen-laguna-s-2-1-free-v1"
+    },
+    {
+      "slug": "opencode-zen/ling-3.0-flash-free",
+      "gatewayModel": "opencode-zen-ling-3-0-flash-free",
+      "upstreamModel": "ling-3.0-flash-free",
+      "provider": "opencode-zen",
+      "listed": true,
+      "displayName": "Ling-3.0-flash Free (opencode Zen)",
+      "description": "Free Ling 3.0 Flash through OpenCode Zen; fast responses, limited-time free tier.",
+      "priority": 63,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 131072,
+      "autoCompact": 110000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-zen-ling-3-0-flash-free-v1"
+    },
+    {
+      "slug": "opencode-zen/longcat-2.0-free",
+      "gatewayModel": "opencode-zen-longcat-2-0-free",
+      "upstreamModel": "longcat-2.0-free",
+      "provider": "opencode-zen",
+      "listed": true,
+      "displayName": "LongCat-2.0 Free (opencode Zen)",
+      "description": "Free LongCat 2.0 through OpenCode Zen; long-context coding model, limited-time free tier.",
+      "priority": 64,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 131072,
+      "autoCompact": 110000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-zen-longcat-2-0-free-v1"
+    },
+    {
+      "slug": "opencode-zen/north-mini-code-free",
+      "gatewayModel": "opencode-zen-north-mini-code-free",
+      "upstreamModel": "north-mini-code-free",
+      "provider": "opencode-zen",
+      "listed": true,
+      "displayName": "North Mini Code Free (opencode Zen)",
+      "description": "Free North Mini Code through OpenCode Zen; limited-time free tier, data may be used to improve the model.",
+      "priority": 65,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 131072,
+      "autoCompact": 110000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-zen-north-mini-code-free-v1"
+    },
+    {
+      "slug": "opencode-zen/nemotron-3-ultra-free",
+      "gatewayModel": "opencode-zen-nemotron-3-ultra-free",
+      "upstreamModel": "nemotron-3-ultra-free",
+      "provider": "opencode-zen",
+      "listed": true,
+      "displayName": "Nemotron 3 Ultra Free (opencode Zen)",
+      "description": "Free Nemotron 3 Ultra through OpenCode Zen; NVIDIA trial endpoint, limited-time free tier.",
+      "priority": 66,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 131072,
+      "autoCompact": 110000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-zen-nemotron-3-ultra-free-v1"
+    },
+    {
+      "slug": "opencode-zen/big-pickle",
+      "gatewayModel": "opencode-zen-big-pickle",
+      "upstreamModel": "big-pickle",
+      "provider": "opencode-zen",
+      "listed": true,
+      "displayName": "Big Pickle (opencode Zen)",
+      "description": "Free stealth model through OpenCode Zen; limited-time free tier, data may be used to improve the model.",
+      "priority": 67,
+      "defaultEffort": "high",
+      "reasoningLevels": [
+        {
+          "effort": "high",
+          "description": "Deep reasoning"
+        }
+      ],
+      "contextWindow": 131072,
+      "autoCompact": 110000,
+      "inputModalities": [
+        "text"
+      ],
+      "compHash": "opencode-zen-big-pickle-v1"
     }
   ]
 }

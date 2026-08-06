@@ -549,6 +549,256 @@ test("router preserves native auth and isolates every external route", async () 
   }
 });
 
+test("router permits a compressed context larger than the encoded request limit", async () => {
+  let receivedInputLength = 0;
+  const native = await mockServer(async (request, response) => {
+    const payload = await bodyJson(request);
+    receivedInputLength = payload.input.length;
+    json(response, 200, { id: "large-context-ok", output: [] });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}`,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${native.port}`,
+    CODEX_ROUTER_QUIET: "1",
+    MODEL_ROUTER_MAX_BODY_BYTES: String(64 * 1024),
+    MODEL_ROUTER_MAX_DECODED_BODY_BYTES: String(4 * 1024 * 1024),
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const input = "x".repeat(1_500_000);
+    const compressed = zstdCompressSync(
+      Buffer.from(JSON.stringify({ model: "gpt-5.6-sol", input })),
+    );
+    assert.ok(compressed.length < 64 * 1024);
+
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${CALLER_KEY}`,
+        "Content-Type": "application/json",
+        "Content-Encoding": "zstd",
+      },
+      body: compressed,
+    });
+
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(receivedInputLength, input.length);
+  } finally {
+    await stopChild(router);
+    await closeServer(native.server);
+  }
+});
+
+test("router relays encrypted Codex subagent payloads before external routing", async () => {
+  const nativeRequests = [];
+  const native = await mockServer(async (request, response) => {
+    nativeRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    const relayArguments = JSON.stringify({ payload: "Inspect /tmp/capture.png harshly." });
+    const relayEvents = [
+      {
+        type: "response.output_item.added",
+        item: {
+          type: "function_call",
+          id: "fc_relay",
+          name: "relay_external_agent_payload",
+          arguments: "",
+        },
+      },
+      {
+        type: "response.function_call_arguments.delta",
+        item_id: "fc_relay",
+        delta: relayArguments.slice(0, 17),
+      },
+      {
+        type: "response.function_call_arguments.delta",
+        item_id: "fc_relay",
+        delta: relayArguments.slice(17),
+      },
+      {
+        type: "response.function_call_arguments.done",
+        item_id: "fc_relay",
+        arguments: relayArguments,
+      },
+    ];
+    const event = `${relayEvents
+      .map((entry) => `event: ${entry.type}\ndata: ${JSON.stringify(entry)}\n\n`)
+      .join("")}data: [DONE]\n\n`;
+    response.writeHead(200, { "Content-Type": "application/octet-stream" });
+    response.write(event.slice(0, 37));
+    response.write(event.slice(37, 103));
+    response.end(event.slice(103));
+  });
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { route: "external" });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CHATGPT_SESSION_TOKEN",
+        "ChatGPT-Account-Id": "account-id",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "kimi-oauth/k3",
+        stream: false,
+        input: [
+          {
+            type: "agent_message",
+            author: "/root",
+            recipient: "/root/critic",
+            content: [
+              {
+                type: "input_text",
+                text: "Message Type: NEW_TASK\nTask name: /root/critic\nSender: /root\nPayload:\n",
+              },
+              { type: "encrypted_content", encrypted_content: "gAAAAA-test-payload=" },
+            ],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(nativeRequests.length, 1);
+    assert.equal(nativeRequests[0].headers.authorization, "Bearer CHATGPT_SESSION_TOKEN");
+    assert.equal(nativeRequests[0].headers["chatgpt-account-id"], "account-id");
+    assert.equal(nativeRequests[0].body.model, "gpt-5.6-sol");
+    assert.equal(nativeRequests[0].body.stream, true);
+    assert.equal(nativeRequests[0].body.tool_choice.name, "relay_external_agent_payload");
+    assert.equal(gatewayRequests.length, 1);
+    const content = gatewayRequests[0].body.input[0].content;
+    assert.equal(content.some((part) => part.type === "encrypted_content"), false);
+    assert.equal(content.at(-1).text, "Inspect /tmp/capture.png harshly.");
+
+    const cachedResponse = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CHATGPT_SESSION_TOKEN",
+        "ChatGPT-Account-Id": "account-id",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "kimi-oauth/k3",
+        stream: false,
+        input: [
+          {
+            type: "agent_message",
+            content: [
+              {
+                type: "input_text",
+                text: "Message Type: NEW_TASK\nTask name: /root/critic\nSender: /root\nPayload:\n",
+              },
+              { type: "encrypted_content", encrypted_content: "gAAAAA-test-payload=" },
+            ],
+          },
+        ],
+      }),
+    });
+    assert.equal(cachedResponse.status, 200, await cachedResponse.text());
+    assert.equal(nativeRequests.length, 1);
+
+    const plaintextResponse = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CHATGPT_SESSION_TOKEN",
+        "ChatGPT-Account-Id": "account-id",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "kimi-oauth/k3",
+        stream: false,
+        input: [
+          {
+            type: "agent_message",
+            content: [
+              {
+                type: "input_text",
+                text: "Message Type: NEW_TASK\nTask name: /root/critic\nSender: /root\nPayload:\n",
+              },
+              {
+                type: "encrypted_content",
+                encrypted_content: "External parent returned plaintext directly.",
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    assert.equal(plaintextResponse.status, 200, await plaintextResponse.text());
+    assert.equal(nativeRequests.length, 1);
+    const plaintextContent = gatewayRequests[2].body.input[0].content;
+    assert.equal(plaintextContent.some((part) => part.type === "encrypted_content"), false);
+    assert.equal(
+      plaintextContent.at(-1).text,
+      "External parent returned plaintext directly.",
+    );
+  } finally {
+    await stopChild(router);
+    await Promise.all([closeServer(native.server), closeServer(gateway.server)]);
+  }
+});
+
+test("router fails closed when an encrypted subagent payload cannot be relayed", async () => {
+  const native = await mockServer(async (_request, response) => {
+    json(response, 401, { error: { message: "native sign-in required" } });
+  });
+  let gatewayRequests = 0;
+  const gateway = await mockServer(async (_request, response) => {
+    gatewayRequests += 1;
+    json(response, 200, { route: "external" });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer expired-session",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "grok-oauth/grok-4.5",
+        input: [
+          {
+            type: "agent_message",
+            content: [
+              { type: "input_text", text: "Message Type: MESSAGE\nPayload:\n" },
+              { type: "encrypted_content", encrypted_content: "gAAAAA-unreadable=" },
+            ],
+          },
+        ],
+      }),
+    });
+    assert.equal(response.status, 502);
+    assert.equal(gatewayRequests, 0);
+  } finally {
+    await stopChild(router);
+    await Promise.all([closeServer(native.server), closeServer(gateway.server)]);
+  }
+});
+
 test("router sends standalone image requests only to the native OpenAI backend", async () => {
   const nativeRequests = [];
   const native = await mockServer(async (request, response) => {
@@ -843,309 +1093,11 @@ test("API forwarder replaces caller auth and enforces Kimi K3 API parameters", a
     assert.equal(request.headers["chatgpt-account-id"], undefined);
     assert.equal(request.headers["x-codex-installation-id"], undefined);
     assert.equal(request.body.model, "kimi-k3");
-    assert.equal(request.body.reasoning_effort, "max");
+    // K3 documents low/high/max; the requested low passes through unchanged.
+    assert.equal(request.body.reasoning_effort, "low");
   } finally {
     await stopChild(forwarder);
     await closeServer(upstream.server);
-  }
-});
-
-test("API forwarder isolates OpenCode Go credentials and preserves tool calls", async () => {
-  const upstreamRequests = [];
-  const upstream = await mockServer(async (request, response) => {
-    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
-    json(response, 200, { choices: [] });
-  });
-  const forwarderPort = await openPort();
-  const forwarder = run("api-forwarder.mjs", {
-    CODEX_ROUTER_API_PORT: String(forwarderPort),
-    OPENCODE_GO_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
-    OPENCODE_GO_API_KEY: "TEST_OPENCODE_GO_API_KEY",
-    CODEX_ROUTER_QUIET: "1",
-  });
-
-  try {
-    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
-      Authorization: `Bearer ${INTERNAL_KEY}`,
-    });
-    const tools = [
-      {
-        type: "function",
-        function: {
-          name: "read_file",
-          description: "Read a file",
-          parameters: {
-            type: "object",
-            properties: { path: { type: "string" } },
-            required: ["path"],
-          },
-        },
-      },
-    ];
-    const response = await fetch(
-      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${INTERNAL_KEY}`,
-          "ChatGPT-Account-Id": "must-not-forward",
-          "X-Codex-Installation-Id": "must-not-forward",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "opencode-go-kimi-k3",
-          reasoning_effort: "low",
-          messages: [{ role: "user", content: "Read package.json" }],
-          tools,
-          tool_choice: "auto",
-        }),
-      },
-    );
-    assert.equal(response.status, 200);
-    const request = upstreamRequests[0];
-    assert.equal(request.headers.authorization, "Bearer TEST_OPENCODE_GO_API_KEY");
-    assert.equal(request.headers["chatgpt-account-id"], undefined);
-    assert.equal(request.headers["x-codex-installation-id"], undefined);
-    assert.equal(request.body.model, "kimi-k3");
-    assert.equal(request.body.reasoning_effort, "max");
-    assert.deepEqual(request.body.tools, tools);
-    assert.equal(request.body.tool_choice, "auto");
-  } finally {
-    await stopChild(forwarder);
-    await closeServer(upstream.server);
-  }
-});
-
-test("API forwarder removes empty Kimi text blocks without losing tool calls", async () => {
-  const upstreamRequests = [];
-  const upstream = await mockServer(async (request, response) => {
-    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
-    json(response, 200, { choices: [] });
-  });
-  const forwarderPort = await openPort();
-  const forwarder = run("api-forwarder.mjs", {
-    CODEX_ROUTER_API_PORT: String(forwarderPort),
-    OPENCODE_GO_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
-    OPENCODE_GO_API_KEY: "TEST_OPENCODE_GO_API_KEY",
-    CODEX_ROUTER_QUIET: "1",
-  });
-
-  try {
-    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
-      Authorization: `Bearer ${INTERNAL_KEY}`,
-    });
-    const toolCall = {
-      id: "call_A",
-      type: "function",
-      function: { name: "read_file", arguments: "{}" },
-    };
-    const response = await fetch(
-      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${INTERNAL_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "opencode-go-kimi-k3",
-          messages: [
-            { role: "system", content: [{ type: "text", text: "" }] },
-            {
-              role: "user",
-              content: [
-                { type: "text", text: "  " },
-                { type: "text", text: "Read package.json" },
-              ],
-            },
-            {
-              role: "assistant",
-              content: [{ type: "text", text: "" }],
-              tool_calls: [toolCall],
-            },
-            { role: "tool", tool_call_id: "call_A", content: "" },
-          ],
-        }),
-      },
-    );
-    assert.equal(response.status, 200);
-    const messages = upstreamRequests[0].body.messages;
-    assert.equal(messages.length, 3);
-    assert.deepEqual(messages[0].content, [
-      { type: "text", text: "Read package.json" },
-    ]);
-    assert.equal(messages[1].content, null);
-    assert.deepEqual(messages[1].tool_calls, [toolCall]);
-    assert.equal(messages[2].content, "[no output]");
-  } finally {
-    await stopChild(forwarder);
-    await closeServer(upstream.server);
-  }
-});
-
-test("API forwarder uses the OpenCode Go backup only after an auth failure", async () => {
-  const testRoot = mkdtempSync(path.join(os.tmpdir(), "opencode-go-backup-"));
-  writeFileSync(
-    path.join(testRoot, "opencode-go-api-key.secret"),
-    "TEST_OPENCODE_PRIMARY\n",
-    { mode: 0o600 },
-  );
-  writeFileSync(
-    path.join(testRoot, "opencode-go-api-key-backup.secret"),
-    "TEST_OPENCODE_BACKUP\n",
-    { mode: 0o600 },
-  );
-  const upstreamRequests = [];
-  const upstream = await mockServer(async (request, response) => {
-    const body = await bodyJson(request);
-    upstreamRequests.push({ headers: request.headers, body });
-    if (body.messages?.[0]?.content === "quota") {
-      json(response, 429, { error: { message: "quota" } });
-    } else if (request.headers.authorization === "Bearer TEST_OPENCODE_PRIMARY") {
-      json(response, 401, { error: { message: "expired" } });
-    } else {
-      json(response, 200, { choices: [] });
-    }
-  });
-  const forwarderPort = await openPort();
-  const forwarder = run("api-forwarder.mjs", {
-    MODEL_ROUTER_STATE_DIR: testRoot,
-    CODEX_ROUTER_API_PORT: String(forwarderPort),
-    OPENCODE_GO_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
-    OPENCODE_GO_API_KEY: "",
-    CODEX_ROUTER_QUIET: "1",
-  });
-
-  const request = (content) =>
-    fetch(`http://127.0.0.1:${forwarderPort}/v1/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${INTERNAL_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "opencode-go-kimi-k3",
-        messages: [{ role: "user", content }],
-      }),
-    });
-
-  try {
-    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
-      Authorization: `Bearer ${INTERNAL_KEY}`,
-    });
-    assert.equal((await request("fallback")).status, 200);
-    assert.deepEqual(
-      upstreamRequests.slice(0, 2).map((entry) => entry.headers.authorization),
-      ["Bearer TEST_OPENCODE_PRIMARY", "Bearer TEST_OPENCODE_BACKUP"],
-    );
-
-    assert.equal((await request("quota")).status, 429);
-    assert.equal(upstreamRequests.length, 3);
-    assert.equal(
-      upstreamRequests[2].headers.authorization,
-      "Bearer TEST_OPENCODE_PRIMARY",
-    );
-  } finally {
-    await stopChild(forwarder);
-    await closeServer(upstream.server);
-    rmSync(testRoot, { recursive: true, force: true });
-  }
-});
-
-test("API forwarder routes OpenCode Go Anthropic and Responses models per model", async () => {
-  const testRoot = mkdtempSync(path.join(os.tmpdir(), "opencode-go-protocols-"));
-  writeFileSync(
-    path.join(testRoot, "user-models.json"),
-    `${JSON.stringify({
-      version: 1,
-      models: [
-        {
-          slug: "opencode-go/qwen-test",
-          gatewayModel: "opencode-go-qwen-test",
-          upstreamModel: "qwen-test",
-          provider: "opencode-go",
-          listed: false,
-          protocol: "anthropic",
-        },
-        {
-          slug: "opencode-go/gpt-test",
-          gatewayModel: "opencode-go-gpt-test",
-          upstreamModel: "gpt-test",
-          provider: "opencode-go",
-          listed: false,
-          protocol: "responses",
-        },
-      ],
-    })}\n`,
-    { mode: 0o600 },
-  );
-  const upstreamRequests = [];
-  const upstream = await mockServer(async (request, response) => {
-    upstreamRequests.push({
-      url: request.url,
-      headers: request.headers,
-      body: await bodyJson(request),
-    });
-    json(response, 200, { output: [], content: [] });
-  });
-  const forwarderPort = await openPort();
-  const forwarder = run("api-forwarder.mjs", {
-    MODEL_ROUTER_STATE_DIR: testRoot,
-    CODEX_ROUTER_API_PORT: String(forwarderPort),
-    OPENCODE_GO_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
-    OPENCODE_GO_API_KEY: "TEST_OPENCODE_GO_API_KEY",
-    CODEX_ROUTER_QUIET: "1",
-  });
-
-  try {
-    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
-      Authorization: `Bearer ${INTERNAL_KEY}`,
-    });
-    const anthropic = await fetch(`http://127.0.0.1:${forwarderPort}/messages`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${INTERNAL_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "opencode-go-qwen-test",
-        messages: [{ role: "user", content: "test" }],
-        tools: [{ name: "read_file", input_schema: { type: "object" } }],
-      }),
-    });
-    assert.equal(anthropic.status, 200);
-
-    const responses = await fetch(`http://127.0.0.1:${forwarderPort}/v1/responses`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${INTERNAL_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "opencode-go-gpt-test",
-        input: "test",
-        tools: [{ type: "function", name: "read_file", parameters: { type: "object" } }],
-      }),
-    });
-    assert.equal(responses.status, 200);
-
-    assert.equal(upstreamRequests[0].url, "/v1/messages");
-    assert.equal(upstreamRequests[0].headers["x-api-key"], "TEST_OPENCODE_GO_API_KEY");
-    assert.equal(upstreamRequests[0].headers.authorization, undefined);
-    assert.equal(upstreamRequests[0].body.model, "qwen-test");
-    assert.equal(upstreamRequests[0].body.tools[0].name, "read_file");
-
-    assert.equal(upstreamRequests[1].url, "/v1/responses");
-    assert.equal(
-      upstreamRequests[1].headers.authorization,
-      "Bearer TEST_OPENCODE_GO_API_KEY",
-    );
-    assert.equal(upstreamRequests[1].body.model, "gpt-test");
-    assert.equal(upstreamRequests[1].body.tools[0].name, "read_file");
-  } finally {
-    await stopChild(forwarder);
-    await closeServer(upstream.server);
-    rmSync(testRoot, { recursive: true, force: true });
   }
 });
 
@@ -1198,9 +1150,12 @@ test("API forwarder supports all DeepSeek V4 models and normalizes thinking", as
     await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
       Authorization: `Bearer ${INTERNAL_KEY}`,
     });
-    for (const [gatewayModel, upstreamModel, effort] of [
-      ["deepseek-v4-flash", "deepseek-v4-flash", "high"],
-      ["deepseek-v4-pro", "deepseek-v4-pro", "max"],
+    // DeepSeek documents low/high/max; low passes through (a real tier on
+    // V4 Flash) and the xhigh compat alias maps to max.
+    for (const [gatewayModel, upstreamModel, sentEffort, effort] of [
+      ["deepseek-v4-flash", "deepseek-v4-flash", "low", "low"],
+      ["deepseek-v4-flash", "deepseek-v4-flash", "medium", "high"],
+      ["deepseek-v4-pro", "deepseek-v4-pro", "xhigh", "max"],
     ]) {
       const response = await fetch(
         `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
@@ -1214,7 +1169,7 @@ test("API forwarder supports all DeepSeek V4 models and normalizes thinking", as
           },
           body: JSON.stringify({
             model: gatewayModel,
-            reasoning_effort: effort === "max" ? "xhigh" : "low",
+            reasoning_effort: sentEffort,
             temperature: 0.7,
             messages: [{ role: "user", content: "test" }],
           }),
@@ -1297,6 +1252,138 @@ test("API forwarder coalesces consecutive assistant messages so tool results fol
   }
 });
 
+test("API forwarder synthesizes missing tool results for incomplete tool_calls history", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { choices: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    DEEPSEEK_API_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    DEEPSEEK_API_KEY: "TEST_DEEPSEEK_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    // Compact / Responses->chat translation can leave assistant tool_calls without
+    // matching tool rows. Console Go rejects that with "insufficient tool
+    // messages following tool_calls message".
+    const toolCalls = [
+      {
+        id: "call_A",
+        type: "function",
+        function: { name: "exec_command", arguments: '{"cmd":"ls"}' },
+      },
+      {
+        id: "call_B",
+        type: "function",
+        function: { name: "view_image", arguments: '{"path":"x.png"}' },
+      },
+    ];
+    const response = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "deepseek-v4-flash",
+          messages: [
+            { role: "user", content: "continue after compact" },
+            { role: "assistant", tool_calls: toolCalls },
+            // Only one of the two call ids has a real tool result.
+            { role: "tool", tool_call_id: "call_A", content: "done" },
+            { role: "user", content: "what next?" },
+            // Orphan tool row after a user turn should not break the contract.
+            { role: "tool", tool_call_id: "call_orphan", content: "stale" },
+          ],
+        }),
+      },
+    );
+    assert.equal(response.status, 200);
+    const messages = upstreamRequests[0].body.messages;
+    assert.equal(messages[0].role, "user");
+    assert.equal(messages[1].role, "assistant");
+    assert.deepEqual(messages[1].tool_calls, toolCalls);
+    assert.equal(messages[2].role, "tool");
+    assert.equal(messages[2].tool_call_id, "call_A");
+    assert.equal(messages[2].content, "done");
+    assert.equal(messages[3].role, "tool");
+    assert.equal(messages[3].tool_call_id, "call_B");
+    assert.match(messages[3].content, /tool result unavailable/);
+    assert.equal(messages[4].role, "user");
+    assert.equal(messages[4].content, "what next?");
+    assert.equal(messages.length, 5);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
+test("API forwarder coalesces split assistant tool turns before synthesizing missing results", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({ headers: request.headers, body: await bodyJson(request) });
+    json(response, 200, { choices: [] });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    DEEPSEEK_API_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    DEEPSEEK_API_KEY: "TEST_DEEPSEEK_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+    const toolCall = {
+      id: "call_A",
+      type: "function",
+      function: { name: "exec_command", arguments: "{}" },
+    };
+    const response = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "deepseek-v4-pro",
+          messages: [
+            { role: "user", content: "run it" },
+            { role: "assistant", tool_calls: [toolCall] },
+            { role: "assistant", content: "Running the command now." },
+            // Missing tool result after the split assistant turn.
+          ],
+        }),
+      },
+    );
+    assert.equal(response.status, 200);
+    const messages = upstreamRequests[0].body.messages;
+    assert.equal(messages.length, 3);
+    assert.equal(messages[1].role, "assistant");
+    assert.equal(messages[1].content, "Running the command now.");
+    assert.deepEqual(messages[1].tool_calls, [toolCall]);
+    assert.equal(messages[2].role, "tool");
+    assert.equal(messages[2].tool_call_id, "call_A");
+    assert.match(messages[2].content, /tool result unavailable/);
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
 test("API forwarder routes Ollama Cloud models without unsupported parameters", async () => {
   const upstreamRequests = [];
   const upstream = await mockServer(async (request, response) => {
@@ -1369,9 +1456,18 @@ test("API forwarder routes Qwen plan models without unsupported parameters", asy
     await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
       Authorization: `Bearer ${INTERNAL_KEY}`,
     });
-    for (const [gatewayModel, upstreamModel] of [
-      ["qwen-plan-qwen3-7-max", "qwen3.7-max"],
-      ["qwen-plan-qwen3-7-plus", "qwen3.7-plus"],
+    // Qwen models have no documented effort control on DashScope, so the
+    // parameter is dropped; the cross-vendor DeepSeek/GLM models DO document
+    // reasoning_effort there (high/max), so the picked tier passes through.
+    for (const [gatewayModel, upstreamModel, expectedEffort] of [
+      ["qwen-plan-qwen3-7-max", "qwen3.7-max", undefined],
+      ["qwen-plan-qwen3-7-plus", "qwen3.7-plus", undefined],
+      ["qwen-plan-qwen3-8-max", "qwen3.8-max", undefined],
+      ["qwen-plan-qwen3-8-max-preview", "qwen3.8-max-preview", undefined],
+      ["qwen-plan-qwen3-6-flash", "qwen3.6-flash", undefined],
+      ["qwen-plan-deepseek-v4-pro", "deepseek-v4-pro", "high"],
+      ["qwen-plan-deepseek-v4-flash-0731", "deepseek-v4-flash-0731", "high"],
+      ["qwen-plan-glm-5-2", "glm-5.2", "high"],
     ]) {
       const response = await fetch(
         `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
@@ -1397,7 +1493,7 @@ test("API forwarder routes Qwen plan models without unsupported parameters", asy
       assert.equal(request.headers["chatgpt-account-id"], undefined);
       assert.equal(request.headers["x-codex-installation-id"], undefined);
       assert.equal(request.body.model, upstreamModel);
-      assert.equal(request.body.reasoning_effort, undefined);
+      assert.equal(request.body.reasoning_effort, expectedEffort);
       assert.equal(request.body.tool_choice, "auto");
     }
   } finally {
@@ -1503,8 +1599,12 @@ test("API forwarder routes GLM coding-plan models with thinking enabled", async 
     await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
       Authorization: `Bearer ${INTERNAL_KEY}`,
     });
+    // GLM-5.2 has two documented tiers (high/max, upstream default max), so
+    // high must be sent explicitly; GLM-5-Turbo does not support the
+    // parameter and never receives it.
     for (const [gatewayModel, upstreamModel, sentEffort, expectedEffort] of [
       ["zai-coding-glm-5-2", "glm-5.2", "xhigh", "max"],
+      ["zai-coding-glm-5-2", "glm-5.2", "high", "high"],
       ["zai-coding-glm-5-turbo", "glm-5-turbo", "low", undefined],
     ]) {
       const response = await fetch(
@@ -1637,7 +1737,7 @@ test("API forwarder isolates Anthropic credentials on the native Messages route"
         body: JSON.stringify({
           model: "anthropic-api-claude-opus-4-8",
           max_tokens: 64,
-          reasoning_effort: "high",
+          reasoning_effort: "xhigh",
           messages: [{ role: "user", content: "test" }],
         }),
       },
@@ -1652,9 +1752,220 @@ test("API forwarder isolates Anthropic credentials on the native Messages route"
     assert.equal(request.body.model, "claude-opus-4-8");
     assert.equal(request.body.reasoning_effort, undefined);
     assert.deepEqual(request.body.thinking, { type: "adaptive" });
-    assert.deepEqual(request.body.output_config, { effort: "high" });
+    // The picker's effort passes through to output_config (documented ladder
+    // low/medium/high/xhigh/max); the integration test covers the high
+    // fallback for unrecognized values.
+    assert.deepEqual(request.body.output_config, { effort: "xhigh" });
   } finally {
     await stopChild(forwarder);
     await closeServer(upstream.server);
+  }
+});
+
+test("API forwarder routes opencode Go chat, Messages, and Responses surfaces", async () => {
+  const upstreamRequests = [];
+  const upstream = await mockServer(async (request, response) => {
+    upstreamRequests.push({
+      url: request.url,
+      headers: request.headers,
+      body: await bodyJson(request),
+    });
+    if (request.url.endsWith("/messages")) {
+      json(response, 200, {
+        id: "msg_opencode_go",
+        type: "message",
+        role: "assistant",
+        model: "minimax-m3",
+        content: [{ type: "text", text: "MESSAGES_OK" }],
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 2, output_tokens: 2 },
+      });
+      return;
+    }
+    if (request.url.endsWith("/responses")) {
+      json(response, 200, {
+        id: "resp_opencode_go",
+        object: "response",
+        created_at: 1,
+        status: "completed",
+        model: "gpt-5.6-luna",
+        output: [],
+        usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 },
+      });
+      return;
+    }
+    json(response, 200, {
+      id: "chatcmpl_opencode_go",
+      object: "chat.completion",
+      model: "mimo-v2.5",
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: "CHAT_OK" },
+          finish_reason: "stop",
+        },
+      ],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    });
+  });
+  const forwarderPort = await openPort();
+  const forwarder = run("api-forwarder.mjs", {
+    CODEX_ROUTER_API_PORT: String(forwarderPort),
+    OPENCODE_GO_BASE_URL: `http://127.0.0.1:${upstream.port}/v1`,
+    OPENCODE_GO_API_KEY: "TEST_OPENCODE_GO_API_KEY",
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`http://127.0.0.1:${forwarderPort}/health`, forwarder, {
+      Authorization: `Bearer ${INTERNAL_KEY}`,
+    });
+
+    const chat = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "opencode-go-mimo-v2-5",
+          messages: [{ role: "user", content: "test" }],
+        }),
+      },
+    );
+    assert.equal(chat.status, 200);
+    assert.equal(upstreamRequests[0].url, "/v1/chat/completions");
+    assert.equal(upstreamRequests[0].body.model, "mimo-v2.5");
+    assert.equal(
+      upstreamRequests[0].headers.authorization,
+      "Bearer TEST_OPENCODE_GO_API_KEY",
+    );
+
+    const messages = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/messages`,
+      {
+        method: "POST",
+        headers: {
+          "x-api-key": INTERNAL_KEY,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "opencode-go-messages-minimax-m3",
+          max_tokens: 64,
+          messages: [{ role: "user", content: "test" }],
+        }),
+      },
+    );
+    assert.equal(messages.status, 200);
+    assert.equal(upstreamRequests[1].url, "/v1/messages");
+    assert.equal(upstreamRequests[1].body.model, "minimax-m3");
+    assert.equal(
+      upstreamRequests[1].headers["x-api-key"],
+      "TEST_OPENCODE_GO_API_KEY",
+    );
+    assert.equal(upstreamRequests[1].headers.authorization, undefined);
+
+    const responses = await fetch(
+      `http://127.0.0.1:${forwarderPort}/v1/responses`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${INTERNAL_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "responses/opencode-go-responses-gpt-5-6-luna",
+          input: "test",
+          stream: false,
+        }),
+      },
+    );
+    assert.equal(responses.status, 200);
+    assert.equal(upstreamRequests[2].url, "/v1/responses");
+    assert.equal(upstreamRequests[2].body.model, "gpt-5.6-luna");
+    assert.equal(
+      upstreamRequests[2].headers.authorization,
+      "Bearer TEST_OPENCODE_GO_API_KEY",
+    );
+  } finally {
+    await stopChild(forwarder);
+    await closeServer(upstream.server);
+  }
+});
+
+test("router strips empty text parts and drops the messages left with nothing", async () => {
+  const gatewayRequests = [];
+  const gateway = await mockServer(async (request, response) => {
+    gatewayRequests.push(await bodyJson(request));
+    json(response, 200, { route: "external" });
+  });
+  const native = await mockServer(async (_request, response) => {
+    json(response, 200, { id: "unused", output: [] });
+  });
+  const routerPort = await openPort();
+  const router = run("router.mjs", {
+    CODEX_ROUTER_PORT: String(routerPort),
+    CODEX_NATIVE_BASE_URL: `http://127.0.0.1:${native.port}/backend-api/codex`,
+    CODEX_ROUTER_GATEWAY_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+    CODEX_ROUTER_QUIET: "1",
+  });
+
+  try {
+    await waitFor(`${routerBase(routerPort)}/models`, router);
+    const response = await fetch(`${routerBase(routerPort)}/responses`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer CHATGPT_SESSION_TOKEN",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "kimi-oauth/k3",
+        stream: false,
+        input: [
+          // Codex emits these filler assistant turns around tool calls.
+          { type: "message", role: "assistant", content: [{ type: "output_text", text: "   " }] },
+          {
+            type: "message",
+            role: "user",
+            content: [
+              { type: "input_text", text: "" },
+              { type: "input_text", text: "real question" },
+            ],
+          },
+          { type: "function_call", name: "shell", arguments: "{}" },
+        ],
+      }),
+    });
+
+    assert.equal(response.status, 200, await response.text());
+    assert.equal(gatewayRequests.length, 1);
+    const forwarded = gatewayRequests[0].input;
+
+    // The whitespace-only assistant message carries nothing once stripped.
+    assert.equal(forwarded.length, 2);
+    assert.ok(!forwarded.some((item) => item.role === "assistant"));
+
+    // A message keeps its real text and loses only the empty part.
+    const user = forwarded.find((item) => item.role === "user");
+    assert.deepEqual(user.content, [{ type: "input_text", text: "real question" }]);
+
+    // Non-message items are never touched.
+    assert.equal(forwarded.at(-1).type, "function_call");
+
+    // Nothing empty survives anywhere.
+    for (const item of forwarded) {
+      if (!Array.isArray(item.content)) continue;
+      for (const part of item.content) {
+        if (typeof part?.text === "string") assert.notEqual(part.text.trim(), "");
+      }
+    }
+  } finally {
+    await stopChild(router);
+    await closeServer(gateway.server);
+    await closeServer(native.server);
   }
 });

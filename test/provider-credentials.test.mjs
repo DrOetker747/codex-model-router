@@ -14,7 +14,7 @@ import test from "node:test";
 const testRoot = mkdtempSync(path.join(os.tmpdir(), "codex-router-credentials-"));
 process.env.CODEX_HOME = path.join(testRoot, "codex");
 process.env.CODEX_ROUTER_STATE_DIR = path.join(testRoot, "state");
-for (const name of ["ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY", "XAI_API_KEY", "GROK_API_KEY", "OPENCODE_GO_API_KEY"]) {
+for (const name of ["ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "KIMI_API_KEY", "MOONSHOT_API_KEY", "XAI_API_KEY", "GROK_API_KEY"]) {
   delete process.env[name];
 }
 
@@ -22,9 +22,7 @@ const {
   credentialFileMode,
   removeProviderCredential,
   resolveProviderCredential,
-  resolveProviderCredentials,
   writeProviderCredential,
-  writeProviderFallbackCredential,
 } = await import("../src/provider-credentials.mjs");
 const { privateFileIsProtected } = await import("../src/file-security.mjs");
 
@@ -46,18 +44,6 @@ test("provider credentials use protected files and remove legacy managed keys", 
     assert.equal(privateFileIsProtected(anthropicPath), true);
     assert.equal(resolveProviderCredential("anthropic-api")?.value, "TEST_ANTHROPIC_FILE_KEY");
 
-    const openCodePrimary = writeProviderCredential("opencode-go", "TEST_OPENCODE_PRIMARY");
-    const openCodeBackup = writeProviderFallbackCredential(
-      "opencode-go",
-      "TEST_OPENCODE_BACKUP",
-    );
-    assert.equal(privateFileIsProtected(openCodePrimary), true);
-    assert.equal(privateFileIsProtected(openCodeBackup), true);
-    assert.deepEqual(
-      resolveProviderCredentials("opencode-go").map((credential) => credential.value),
-      ["TEST_OPENCODE_PRIMARY", "TEST_OPENCODE_BACKUP"],
-    );
-
     const legacyDirectory = path.join(process.env.CODEX_HOME, "kimi-router");
     const legacyPath = path.join(legacyDirectory, "api-key.secret");
     mkdirSync(legacyDirectory, { recursive: true, mode: 0o700 });
@@ -69,12 +55,9 @@ test("provider credentials use protected files and remove legacy managed keys", 
     assert.equal(removeProviderCredential("deepseek"), 1);
     assert.equal(removeProviderCredential("grok-api"), 1);
     assert.equal(removeProviderCredential("anthropic-api"), 1);
-    assert.equal(removeProviderCredential("opencode-go"), 2);
     assert.equal(existsSync(deepSeekPath), false);
     assert.equal(existsSync(xaiPath), false);
     assert.equal(existsSync(anthropicPath), false);
-    assert.equal(existsSync(openCodePrimary), false);
-    assert.equal(existsSync(openCodeBackup), false);
   } finally {
     rmSync(testRoot, { recursive: true, force: true });
   }

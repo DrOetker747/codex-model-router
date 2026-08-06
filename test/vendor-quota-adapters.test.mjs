@@ -53,12 +53,12 @@ writeFileSync(registryPath, JSON.stringify({
 }));
 process.env.CODEX_ROUTER_STATE_DIR = stateDir;
 process.env.CODEX_ROUTER_REGISTRY = registryPath;
-delete process.env.OLLAMA_API_KEY;
 
 const {
   providerAccountUsageSnapshot,
   zaiQuotaMetrics,
 } = await import("../src/provider-account-usage.mjs");
+
 
 test("normalizes z.ai time and token quota windows", () => {
   assert.deepEqual(zaiQuotaMetrics({
@@ -183,7 +183,11 @@ test("qwen and ollama stay local-only but carry a dashboard link", async () => {
     },
   });
   assert.equal(snapshot["qwen-plan"].status, "local-only");
-  assert.ok(snapshot["qwen-plan"].dashboardUrl.includes("modelstudio.console.alibabacloud.com"));
+  assert.ok(
+    snapshot["qwen-plan"].dashboardUrl.startsWith("https://modelstudio.console.alibabacloud.com/"),
+  );
   assert.equal(snapshot["ollama-cloud"].status, "not-configured");
   assert.equal(snapshot["ollama-cloud"].dashboardUrl, undefined);
 });
+
+

@@ -1,5 +1,7 @@
 import http from "node:http";
+import path from "node:path";
 
+import { createRotationState, ROTATE_ON_STATUS } from "./api-key-rotation.mjs";
 import {
   HOP_BY_HOP_HEADERS,
   httpErrorStatus,
@@ -8,20 +10,20 @@ import {
   requireInternalAuth,
   writeJson,
 } from "./http-utils.mjs";
-import { PORTS, TARGET } from "./paths.mjs";
+import { PORTS, STATE_DIR, TARGET } from "./paths.mjs";
 import {
   API_MODELS,
   MODEL_BY_GATEWAY_ID,
   PROVIDERS,
-  protocolForModel,
   providerForModel,
 } from "./model-registry.mjs";
 import { parseRateLimitHeaders } from "./rate-limit-headers.mjs";
 import { recordRateLimitSnapshot } from "./rate-limit-state.mjs";
-import { readProviderSelection } from "./provider-selection.mjs";
+import { canonicalProviderId, readProviderSelection } from "./provider-selection.mjs";
 import {
   credentialStatus,
-  resolveProviderCredentials,
+  resolveProviderCredential,
+  resolveProviderCredentialSlots,
 } from "./provider-credentials.mjs";
 import { VERSION } from "./version.mjs";
 
@@ -50,12 +52,30 @@ const QUIET =
 
 if (!INTERNAL_KEY) throw new Error("MODEL_ROUTER_INTERNAL_KEY is required.");
 
+// Per-provider key rotation state survives restarts so a spent key is not
+// retried immediately; see api-key-rotation.mjs for the slot semantics.
+const rotationState = createRotationState(
+  path.join(STATE_DIR, "api-key-rotation.json"),
+);
+
 function providerBaseUrl(provider) {
   return String(process.env[provider.baseUrlEnv] || provider.baseUrl).replace(/\/+$/, "");
 }
 
+// DeepSeek documents low/high/max (docs also accept xhigh as a compat alias).
 function deepSeekEffort(value) {
+  if (["low", "minimal"].includes(value)) return "low";
   return ["xhigh", "max", "ultra"].includes(value) ? "max" : "high";
+}
+
+// Kimi K3 documents low/high/max; the platform maps common aliases the same
+// way (medium collapses to high, xhigh to max). Unknown values are a 400
+// upstream, so anything unrecognized falls back to the documented default.
+function kimiK3Effort(value) {
+  if (["low", "minimal"].includes(value)) return "low";
+  if (["medium", "high"].includes(value)) return "high";
+  if (["xhigh", "max", "ultra"].includes(value)) return "max";
+  return undefined;
 }
 
 // Strict chat-completions providers (e.g. MiniMax) reject a turn whose tool
@@ -107,43 +127,72 @@ function coalesceAssistantMessages(messages) {
   return coalesced;
 }
 
-function nonEmptyTextBlock(block) {
-  if (!block || typeof block !== "object") return true;
-  if (!["text", "input_text", "output_text"].includes(block.type)) return true;
-  return typeof block.text === "string" && block.text.trim().length > 0;
+// Strict chat-completions providers (Console Go / MiniMax / similar) reject any
+// assistant tool_calls message whose matching tool results are incomplete or
+// separated by non-tool traffic. LiteLLM's Responses->chat translation and
+// Codex remote compact can emit orphan tool_calls after interrupted tool runs
+// or partial history. Insert synthetic tool results for missing call ids so
+// the request stays well-formed. Prefer a short machine-readable stub over
+// dropping history, which would erase useful prior context.
+const SYNTHETIC_TOOL_RESULT =
+  "[tool result unavailable: prior tool execution was interrupted or omitted from history]";
+
+function toolCallIds(message) {
+  if (!Array.isArray(message?.tool_calls)) return [];
+  return message.tool_calls
+    .map((call) => (typeof call?.id === "string" ? call.id : ""))
+    .filter(Boolean);
 }
 
-// Some Codex histories contain empty text blocks around tool calls. OpenAI
-// accepts that shape, while stricter Chat Completions providers such as Kimi K3
-// reject the whole request with "text content is empty". Remove only empty
-// text blocks and empty no-op messages; preserve every semantic content block
-// and every tool call/result.
-function sanitizeChatMessages(messages) {
-  if (!Array.isArray(messages)) return messages;
-  const sanitized = [];
-  for (const original of messages) {
-    if (!original || typeof original !== "object") continue;
-    const message = { ...original };
-    if (Array.isArray(message.content)) {
-      message.content = message.content.filter(nonEmptyTextBlock);
-      if (message.content.length === 0) message.content = null;
-    } else if (typeof message.content === "string" && message.content.trim() === "") {
-      message.content = null;
+function ensureToolResultsForCalls(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+  const repaired = [];
+  let index = 0;
+  while (index < messages.length) {
+    const message = messages[index];
+    // Tool rows are only valid immediately after their assistant tool_calls.
+    // Anything else (orphans after compaction, duplicates after intervening
+    // turns) is dropped so strict providers do not reject the whole request.
+    if (message?.role === "tool") {
+      index += 1;
+      continue;
     }
 
-    const hasToolCalls = Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
-    if (message.content === null || message.content === undefined) {
-      if (message.role === "assistant" && hasToolCalls) {
-        message.content = null;
-      } else if (message.role === "tool") {
-        message.content = "[no output]";
-      } else {
-        continue;
-      }
+    repaired.push(message);
+    const callIds = toolCallIds(message);
+    if (message?.role !== "assistant" || callIds.length === 0) {
+      index += 1;
+      continue;
     }
-    sanitized.push(message);
+
+    index += 1;
+    const toolsById = new Map();
+    while (index < messages.length && messages[index]?.role === "tool") {
+      const toolMessage = messages[index];
+      const toolCallId =
+        typeof toolMessage?.tool_call_id === "string" ? toolMessage.tool_call_id : "";
+      if (toolCallId && callIds.includes(toolCallId) && !toolsById.has(toolCallId)) {
+        toolsById.set(toolCallId, toolMessage);
+      }
+      index += 1;
+    }
+
+    for (const callId of callIds) {
+      repaired.push(
+        toolsById.get(callId) || {
+          role: "tool",
+          tool_call_id: callId,
+          content: SYNTHETIC_TOOL_RESULT,
+        },
+      );
+    }
   }
-  return sanitized;
+  return repaired;
+}
+
+function sanitizeChatToolHistory(messages) {
+  if (!Array.isArray(messages)) return messages;
+  return ensureToolResultsForCalls(coalesceAssistantMessages(messages));
 }
 
 function normalizeBody(buffer, contentType, route) {
@@ -158,19 +207,24 @@ function normalizeBody(buffer, contentType, route) {
     error.status = 400;
     throw error;
   }
-  const model = MODEL_BY_GATEWAY_ID.get(payload.model);
+  const requestedModel = String(payload.model || "");
+  // LiteLLM's Responses bridge prefixes the gateway id with `responses/` on
+  // the upstream wire format; the forwarder still owns the id translation.
+  const model =
+    MODEL_BY_GATEWAY_ID.get(requestedModel.replace(/^responses\//, "")) ||
+    MODEL_BY_GATEWAY_ID.get(requestedModel);
   const provider = model && providerForModel(model);
   if (!model || provider?.kind !== "openai-compatible") {
     const error = new Error(`Unknown API gateway model: ${String(payload.model || "missing")}`);
     error.status = 400;
     throw error;
   }
-  const protocol = protocolForModel(model);
-  const expectedRoute = protocol === "anthropic"
-    ? "/messages"
-    : protocol === "responses"
-      ? "/responses"
-      : "/chat/completions";
+  const expectedRoute =
+    provider.protocol === "anthropic"
+      ? "/messages"
+      : provider.protocol === "openai-responses"
+        ? "/responses"
+        : "/chat/completions";
   if (route !== expectedRoute) {
     const error = new Error(`Model ${model.gatewayModel} does not support ${route}.`);
     error.status = 400;
@@ -179,10 +233,13 @@ function normalizeBody(buffer, contentType, route) {
 
   payload.model = model.upstreamModel;
   if (Array.isArray(payload.messages)) {
-    payload.messages = sanitizeChatMessages(coalesceAssistantMessages(payload.messages));
+    payload.messages = sanitizeChatToolHistory(payload.messages);
   }
   if (model.requestProfile === "kimi-k3") {
-    payload.reasoning_effort = "max";
+    const effort = kimiK3Effort(payload.reasoning_effort);
+    // Absent means the platform default (max); K3 rejects the thinking param.
+    if (effort) payload.reasoning_effort = effort;
+    else delete payload.reasoning_effort;
     delete payload.thinking;
   } else if (model.requestProfile === "deepseek-thinking") {
     payload.thinking = { type: "enabled" };
@@ -199,10 +256,17 @@ function normalizeBody(buffer, contentType, route) {
     // hosted models reason by default, so drop the parameter.
     delete payload.reasoning_effort;
   } else if (model.requestProfile === "qwen-plan") {
-    // DashScope's OpenAI-compatible mode does not document reasoning_effort;
-    // Qwen3.7 models reason adaptively by default, so drop the parameter
-    // rather than risk an invalid-parameter rejection.
-    delete payload.reasoning_effort;
+    // DashScope documents reasoning_effort only for the cross-vendor
+    // DeepSeek/GLM models it resells (high/max; low/medium collapse to high,
+    // xhigh to max). Qwen models have no documented effort control, so the
+    // parameter is dropped for them.
+    if ((model.reasoningLevels || []).length > 1) {
+      payload.reasoning_effort = ["xhigh", "max", "ultra"].includes(payload.reasoning_effort)
+        ? "max"
+        : "high";
+    } else {
+      delete payload.reasoning_effort;
+    }
     // Qwen rejects forced tool choices in thinking mode
     // ("tool_choice ... does not support being set to required or object");
     // downgrade to auto so tool calls stay available.
@@ -211,11 +275,15 @@ function normalizeBody(buffer, contentType, route) {
     }
   } else if (model.requestProfile === "glm-thinking") {
     payload.thinking = { type: "enabled" };
-    if (["xhigh", "max", "ultra"].includes(payload.reasoning_effort)) {
-      payload.reasoning_effort = "max";
+    // Z.ai documents reasoning_effort only for GLM-5.2, with two effective
+    // tiers (high/max) and max as the upstream default when omitted. Models
+    // whose registry entry offers a single level (GLM-5-Turbo, GLM-5.1) do
+    // not support the parameter at all.
+    if ((model.reasoningLevels || []).length > 1) {
+      payload.reasoning_effort = ["xhigh", "max", "ultra"].includes(payload.reasoning_effort)
+        ? "max"
+        : "high";
     } else {
-      // Z.ai documents only the maximum tier; leave other levels to the
-      // upstream default rather than sending an unsupported value.
       delete payload.reasoning_effort;
     }
     // Z.ai requires temperature 1.0 with thinking enabled; drop sampling
@@ -230,19 +298,25 @@ function normalizeBody(buffer, contentType, route) {
     delete payload.frequency_penalty;
     delete payload.stop;
   } else if (model.requestProfile === "anthropic-reasoning") {
+    // Anthropic steers adaptive thinking via output_config.effort
+    // (low/medium/high/xhigh/max, default high).
+    const effort = { minimal: "low", ultra: "max" }[payload.reasoning_effort] ||
+      (["low", "medium", "high", "xhigh", "max"].includes(payload.reasoning_effort)
+        ? payload.reasoning_effort
+        : "high");
     delete payload.reasoning_effort;
     payload.thinking = { type: "adaptive" };
-    payload.output_config = { effort: "high" };
+    payload.output_config = { effort };
   } else if (model.requestProfile === "minimax-m3") {
     // MiniMax uses its own thinking control on the OpenAI-compatible
     // Chat Completions endpoint instead of reasoning_effort.
     delete payload.reasoning_effort;
     payload.thinking = { type: "adaptive" };
   }
-  return { body: Buffer.from(JSON.stringify(payload), "utf8"), model, provider, protocol };
+  return { body: Buffer.from(JSON.stringify(payload), "utf8"), model, provider };
 }
 
-function upstreamHeaders(requestHeaders, body, apiKey, protocol) {
+function upstreamHeaders(requestHeaders, body, apiKey, provider) {
   const headers = {};
   for (const [name, value] of Object.entries(requestHeaders)) {
     const lower = name.toLowerCase();
@@ -254,7 +328,7 @@ function upstreamHeaders(requestHeaders, body, apiKey, protocol) {
     }
     if (value !== undefined) headers[name] = Array.isArray(value) ? value.join(", ") : value;
   }
-  if (protocol === "anthropic") {
+  if (provider.protocol === "anthropic") {
     headers["x-api-key"] = apiKey;
     headers["anthropic-version"] ||= "2023-06-01";
   } else {
@@ -277,6 +351,7 @@ function healthPayload() {
       ...(status.configured
         ? { credential_source: status.source }
         : { setup: status.setup }),
+      key_slots: resolveProviderCredentialSlots(provider).length,
     };
   }
   return { ok: true, service: "codex-router-api-forwarder", providers };
@@ -322,8 +397,8 @@ async function handleRequest(request, response) {
 
   const original = await readRequestBody(request);
   const normalized = normalizeBody(original, request.headers["content-type"], route);
-  const credentials = resolveProviderCredentials(normalized.provider);
-  if (credentials.length === 0) {
+  const credential = resolveProviderCredential(normalized.provider);
+  if (!credential) {
     const setup = credentialStatus(normalized.provider).setup;
     writeJson(response, 503, {
       error: {
@@ -341,23 +416,44 @@ async function handleRequest(request, response) {
     if (!response.writableEnded) controller.abort();
   });
   const target = `${providerBaseUrl(normalized.provider)}${route}${requestUrl.search}`;
+
+  // Rotate between the provider's configured key slots: a slot that reports
+  // 401/402/429 is spent, so it is marked exhausted and the request retried
+  // with the next slot. The last upstream response is forwarded as-is when
+  // every slot is spent (or only one key exists).
+  const slots = resolveProviderCredentialSlots(normalized.provider);
+  const family = canonicalProviderId(normalized.provider.id);
+  const attempted = new Set();
   let upstream;
-  for (let index = 0; index < credentials.length; index += 1) {
-    const credential = credentials[index];
+  for (;;) {
+    const slotIndex = rotationState.nextSlot(family, slots.length, attempted);
+    if (slotIndex === -1) break;
+    attempted.add(slotIndex);
+    rotationState.markUsed(family, slotIndex);
     upstream = await fetch(target, {
       method: request.method,
       headers: upstreamHeaders(
         request.headers,
         normalized.body,
-        credential.value,
-        normalized.protocol,
+        slots[slotIndex].value,
+        normalized.provider,
       ),
       body: normalized.body,
       signal: controller.signal,
     });
-    const hasBackup = index + 1 < credentials.length;
-    if (![401, 403].includes(upstream.status) || !hasBackup) break;
-    await upstream.body?.cancel();
+    if (!ROTATE_ON_STATUS.has(upstream.status)) break;
+    rotationState.markExhausted(family, slotIndex);
+    await upstream.body?.cancel().catch(() => {});
+  }
+  if (!upstream) {
+    writeJson(response, 503, {
+      error: {
+        type: "provider_api_key_unavailable",
+        provider: normalized.provider.id,
+        message: "No usable provider key slot is available.",
+      },
+    });
+    return;
   }
   await pipeResponse(upstream, response);
   // Harvest the provider's own quota report from the response it just sent.
@@ -366,7 +462,9 @@ async function handleRequest(request, response) {
   // Recorded after the body streams because persisting is synchronous I/O and
   // must never sit in time-to-first-byte.
   const rateLimit = parseRateLimitHeaders(upstream.headers);
-  if (rateLimit) recordRateLimitSnapshot(normalized.provider.id, rateLimit);
+  // Variant-routed responses meter the same upstream subscription, so quota
+  // headers land under the family's canonical provider id.
+  if (rateLimit) recordRateLimitSnapshot(family, rateLimit);
   if (!QUIET) {
     console.error(
       `[api-forwarder] provider=${normalized.provider.id} model=${normalized.model.upstreamModel} status=${upstream.status} duration_ms=${Date.now() - startedAt}`,

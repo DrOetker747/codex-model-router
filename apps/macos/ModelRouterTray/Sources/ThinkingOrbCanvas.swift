@@ -164,6 +164,7 @@ final class ThinkingOrbRenderer {
     let spread: CGFloat = 1.45
     let pathCount = 160
     var path: [CGPoint] = []
+    path.reserveCapacity(pathCount)
 
     for index in 0..<pathCount {
       let amount = CGFloat(index) / CGFloat(pathCount)
@@ -178,6 +179,7 @@ final class ThinkingOrbRenderer {
     }
 
     var lengths: [CGFloat] = []
+    lengths.reserveCapacity(pathCount)
     var total: CGFloat = 0
     for index in 0..<pathCount {
       let current = path[index]
@@ -192,6 +194,7 @@ final class ThinkingOrbRenderer {
     let breathe = 1 + 0.02 * sin(segmentTime * 3.1)
     let center = size / 2
     var dots: [Dot] = []
+    dots.reserveCapacity(pointCount)
     var pathIndex = 0
     var traversed: CGFloat = 0
 
@@ -316,6 +319,7 @@ final class ThinkingOrbRenderer {
     let yaw = time * 0.55
     let pitch = 0.35 + 0.1 * sin(time * 0.9)
     var dots: [Dot] = []
+    dots.reserveCapacity((latitudeRings + 1) * longitudeDensity)
 
     for latitude in 0...latitudeRings {
       let latitudeAngle = -.pi / 2 + CGFloat(latitude) / CGFloat(latitudeRings) * .pi
@@ -359,6 +363,7 @@ final class ThinkingOrbRenderer {
     let scale = radiusScale()
     var dots: [Dot] = []
     let ghostCount = 8
+    dots.reserveCapacity(ghostCount + 10 * 20)
 
     for index in 0..<ghostCount {
       let point = fibonacciSphere(index: index, count: ghostCount)
@@ -436,10 +441,17 @@ final class ThinkingOrbNSView: NSView {
   private var displayLink: CVDisplayLink?
   private var startTime = CACurrentMediaTime()
   private var running = false
+  private let redrawLock = NSLock()
+  private var redrawScheduled = false
   private var mode: ThinkingOrbMode = .shaping
   var reduceMotion = false {
     didSet {
       guard reduceMotion != oldValue else { return }
+      if reduceMotion {
+        stopDisplayLink()
+      } else if running {
+        startDisplayLink()
+      }
       setNeedsDisplay(bounds)
     }
   }
@@ -457,7 +469,7 @@ final class ThinkingOrbNSView: NSView {
   }
 
   deinit {
-    stop()
+    stopDisplayLink()
   }
 
   override var isFlipped: Bool { true }
@@ -465,17 +477,22 @@ final class ThinkingOrbNSView: NSView {
   override func viewDidMoveToWindow() {
     super.viewDidMoveToWindow()
     if window == nil {
-      stop()
+      stopDisplayLink()
     } else if running {
-      start()
+      startDisplayLink()
     }
   }
 
   func setRunning(_ value: Bool) {
-    if value {
-      start()
+    guard running != value else {
+      if value { startDisplayLink() }
+      return
+    }
+    running = value
+    if running {
+      startDisplayLink()
     } else {
-      stop()
+      stopDisplayLink()
       setNeedsDisplay(bounds)
     }
   }
@@ -487,16 +504,8 @@ final class ThinkingOrbNSView: NSView {
     setNeedsDisplay(bounds)
   }
 
-  private func start() {
-    running = true
-    guard !reduceMotion else {
-      if let displayLink {
-        CVDisplayLinkStop(displayLink)
-        self.displayLink = nil
-      }
-      setNeedsDisplay(bounds)
-      return
-    }
+  private func startDisplayLink() {
+    guard running, !reduceMotion, window != nil else { return }
     guard displayLink == nil else { return }
     startTime = CACurrentMediaTime()
     var link: CVDisplayLink?
@@ -509,9 +518,7 @@ final class ThinkingOrbNSView: NSView {
       { _, _, _, _, _, userInfo in
         guard let userInfo else { return kCVReturnSuccess }
         let view = Unmanaged<ThinkingOrbNSView>.fromOpaque(userInfo).takeUnretainedValue()
-        DispatchQueue.main.async {
-          view.setNeedsDisplay(view.bounds)
-        }
+        view.scheduleRedraw()
         return kCVReturnSuccess
       },
       unmanaged.toOpaque()
@@ -519,11 +526,29 @@ final class ThinkingOrbNSView: NSView {
     CVDisplayLinkStart(link)
   }
 
-  private func stop() {
-    running = false
+  private func stopDisplayLink() {
     if let displayLink {
       CVDisplayLinkStop(displayLink)
       self.displayLink = nil
+    }
+  }
+
+  private func scheduleRedraw() {
+    redrawLock.lock()
+    guard !redrawScheduled else {
+      redrawLock.unlock()
+      return
+    }
+    redrawScheduled = true
+    redrawLock.unlock()
+
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.redrawLock.lock()
+      self.redrawScheduled = false
+      self.redrawLock.unlock()
+      guard self.running, !self.reduceMotion, self.window != nil else { return }
+      self.setNeedsDisplay(self.bounds)
     }
   }
 

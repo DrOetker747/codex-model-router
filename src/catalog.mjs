@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -11,20 +10,19 @@ import { fileURLToPath } from "node:url";
 
 import { protectPrivateFile } from "./file-security.mjs";
 import {
+  ANNOUNCED_MODELS_PATH,
   CONFIG_PATH,
   MERGED_CATALOG_PATH,
   NATIVE_ALIAS_PATH,
   NATIVE_CATALOG_PATH,
 } from "./paths.mjs";
-import { codexIsAuthenticated, requireCodexBinary } from "./codex-binary.mjs";
-import {
-  preserveNativeAgentProfiles,
-  rebuildExternalSubagentProfiles,
-} from "./codex-agent-catalog.mjs";
-import { syncExternalAgentRegistrations } from "./codex-agent-registration.mjs";
-import { MODEL_BY_SLUG } from "./model-registry.mjs";
+import { codexAuthStatus, codexVersion, runCodex } from "./codex-binary.mjs";
+import { readUserModels } from "./user-models.mjs";
+import { syncRoutedCodexAgents } from "./codex-agent-catalog.mjs";
+import { MODEL_BY_SLUG, PROVIDERS } from "./model-registry.mjs";
 import { buildNativeAliasAssignments } from "./native-alias.mjs";
 import { selectedConfiguredListedModels } from "./provider-selection.mjs";
+import { assertStateOwnership } from "./state-owner.mjs";
 
 const refresh = process.argv.includes("--refresh-native");
 const bundled = process.argv.includes("--bundled-native");
@@ -41,31 +39,19 @@ function atomicJson(target, value) {
   protectPrivateFile(target);
 }
 
-export function writeModelCatalogJson(
-  models,
-  catalogUpdatedAt = new Date().toISOString(),
-  target = MERGED_CATALOG_PATH,
-) {
-  if (!Array.isArray(models)) throw new Error("Merged model catalog must be an array.");
-  if (typeof catalogUpdatedAt !== "string" || !catalogUpdatedAt) {
-    throw new Error("Merged model catalog requires a generation timestamp.");
-  }
-  atomicJson(target, { catalogUpdatedAt, models });
-}
-
 function captureNative() {
   const args = ["debug", "models"];
   if (bundled) args.push("--bundled");
   let output;
   try {
-    output = execFileSync(requireCodexBinary(), args, {
+    output = runCodex(args, {
       encoding: "utf8",
       timeout: 30_000,
       maxBuffer: 32 * 1024 * 1024,
     });
   } catch (error) {
     if (bundled) throw error;
-    output = execFileSync(requireCodexBinary(), ["debug", "models", "--bundled"], {
+    output = runCodex(["debug", "models", "--bundled"], {
       encoding: "utf8",
       timeout: 30_000,
       maxBuffer: 32 * 1024 * 1024,
@@ -80,17 +66,107 @@ function captureNative() {
       "Refusing to capture an already-merged catalog. Disable the router before refreshing native models.",
     );
   }
-  atomicJson(NATIVE_CATALOG_PATH, { models: parsed.models });
+  const capturedWith = codexVersion();
+  atomicJson(NATIVE_CATALOG_PATH, {
+    ...(capturedWith ? { captured_with: capturedWith } : {}),
+    models: parsed.models,
+  });
   return parsed;
+}
+
+// A native capture is only trustworthy for the Codex build that produced it:
+// newer builds can require catalog fields the older build never emitted, or
+// carry different capability values for the same slug. An unknown current
+// version keeps the cache — with no binary to re-ask, stale is the best we
+// have.
+export function nativeCatalogIsReusable(parsed, currentVersion) {
+  if (!parsed || !Array.isArray(parsed.models) || parsed.models.length === 0) {
+    return false;
+  }
+  return !currentVersion || parsed.captured_with === currentVersion;
 }
 
 function nativeCatalog() {
   if (!existsSync(NATIVE_CATALOG_PATH) || refresh) return captureNative();
   const parsed = JSON.parse(readFileSync(NATIVE_CATALOG_PATH, "utf8"));
-  if (!parsed || !Array.isArray(parsed.models) || parsed.models.length === 0) {
+  if (nativeCatalogIsReusable(parsed, codexVersion())) return parsed;
+  try {
     return captureNative();
+  } catch (error) {
+    // Version-mismatched is still better than empty: serve the stale capture
+    // when the re-capture fails, but say so instead of hiding it.
+    if (parsed && Array.isArray(parsed.models) && parsed.models.length > 0) {
+      console.error(
+        `Could not refresh the native model catalog (${error.message}); reusing the cached capture.`,
+      );
+      return parsed;
+    }
+    throw error;
   }
-  return parsed;
+}
+
+// Codex's picker deserializes reasoning efforts into a fixed enum and
+// silently drops any level it does not recognize, so a curated "max" level
+// simply vanishes from the effort menu on builds whose enum ends at xhigh
+// (issue #57). No runtime probe can see this: config parsing accepts unknown
+// effort strings, and `debug models` passes catalog levels through as plain
+// strings even on builds whose picker cannot offer them. The enum history is
+// the only reliable signal — max and ultra joined in 0.143.0 (verified
+// against the published binaries: 0.142.5 lacks the serde variants, 0.143.0
+// carries them), and the baseline predates this router. An unknown version
+// clamps: a wrongly clamped Max still routes at full effort under the xhigh
+// label, while a wrongly emitted max is exactly the missing-picker-entry bug.
+const BASELINE_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
+const EFFORT_LADDER = [...BASELINE_EFFORTS, "max", "ultra"];
+const MAX_EFFORT_SINCE = [0, 143, 0];
+
+export function codexEffortVocabulary(version) {
+  const match = /(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.]+)?/.exec(String(version || ""));
+  if (!match) return new Set(BASELINE_EFFORTS);
+  const installed = [Number(match[1]), Number(match[2]), Number(match[3])];
+  for (let index = 0; index < 3; index += 1) {
+    if (installed[index] > MAX_EFFORT_SINCE[index]) return new Set(EFFORT_LADDER);
+    if (installed[index] < MAX_EFFORT_SINCE[index]) return new Set(BASELINE_EFFORTS);
+  }
+  // Exactly the boundary release: prereleases of it may predate the variants.
+  return match[4] ? new Set(BASELINE_EFFORTS) : new Set(EFFORT_LADDER);
+}
+
+function clampEffort(effort, vocabulary) {
+  if (vocabulary.has(effort)) return effort;
+  const start = EFFORT_LADDER.indexOf(effort);
+  // Off-ladder values cannot be ranked, so pass them through unchanged.
+  if (start === -1) return effort;
+  for (let index = start - 1; index >= 0; index -= 1) {
+    if (vocabulary.has(EFFORT_LADDER[index])) return EFFORT_LADDER[index];
+  }
+  return effort;
+}
+
+// Registry levels are ordered lightest-first, so when a clamped level lands on
+// an effort the model already offers (xhigh + max both become xhigh), the
+// genuine entry keeps its slot and the clamped duplicate is dropped.
+export function clampModelEfforts(models, vocabulary) {
+  return models.map((model) => {
+    if (!Array.isArray(model.reasoningLevels)) return model;
+    const levels = [];
+    const seen = new Set();
+    for (const level of model.reasoningLevels) {
+      const effort = clampEffort(level.effort, vocabulary);
+      if (seen.has(effort)) continue;
+      seen.add(effort);
+      levels.push(effort === level.effort ? level : { ...level, effort });
+    }
+    const defaultEffort = clampEffort(model.defaultEffort, vocabulary);
+    if (
+      defaultEffort === model.defaultEffort &&
+      levels.length === model.reasoningLevels.length &&
+      levels.every((level, index) => level === model.reasoningLevels[index])
+    ) {
+      return model;
+    }
+    return { ...model, reasoningLevels: levels, defaultEffort };
+  });
 }
 
 function selectedModel() {
@@ -126,6 +202,30 @@ function identityName(model) {
   return bare || "an external model";
 }
 
+// Protocol variants republish a model under a sibling slug so the gateway can
+// serve it over a second API dialect; the picker must show the family once.
+// Prefer the canonical (non-variant) entry so Codex advertises one row per
+// model while every variant slug stays routable through the gateway.
+export function dedupeRoutedModels(models) {
+  const byIdentity = new Map();
+  for (const model of models) {
+    const key = identityName(model).toLowerCase();
+    const previous = byIdentity.get(key);
+    if (!previous) {
+      byIdentity.set(key, model);
+      continue;
+    }
+    const previousVariant = Boolean(PROVIDERS.get(previous.provider)?.variantOf);
+    const currentVariant = Boolean(PROVIDERS.get(model.provider)?.variantOf);
+    if (currentVariant !== previousVariant) {
+      if (!currentVariant) byIdentity.set(key, model);
+    } else if (Number(model.priority) < Number(previous.priority)) {
+      byIdentity.set(key, model);
+    }
+  }
+  return [...byIdentity.values()];
+}
+
 function rewriteIdentity(text, model) {
   if (typeof text !== "string" || !text) return text;
   const name = identityName(model);
@@ -148,17 +248,20 @@ function rewriteModelMessages(messages, model) {
   return next;
 }
 
+function normalizeNativeModel(model) {
+  return Object.hasOwn(model, "supports_reasoning_summaries")
+    ? model
+    : { ...model, supports_reasoning_summaries: false };
+}
+
 export function routedModel(template, model) {
   const next = {
     ...template,
     slug: model.slug,
-    provider: model.provider,
-    listed: model.listed,
-    protocol: model.protocol,
     display_name: model.displayName,
     description: model.description,
     priority: model.priority,
-    visibility: model.pickerVisibility || "list",
+    visibility: "list",
     supported_in_api: true,
     default_reasoning_level: model.defaultEffort,
     supported_reasoning_levels: model.reasoningLevels,
@@ -170,16 +273,36 @@ export function routedModel(template, model) {
     comp_hash: model.compHash,
     additional_speed_tiers: [],
     service_tiers: [],
-    availability_nux: null,
-    upgrade: null,
-    supports_reasoning_summaries: false,
-    default_reasoning_summary: "none",
+    // Codex surfaces this once per slug (up to its own show cap) as the
+    // "Introducing {model}" announcement; absent copy must stay null so the
+    // client never renders an empty card.
+    availability_nux:
+      typeof model.availabilityNux === "string" && model.availabilityNux.trim()
+        ? { message: model.availabilityNux.trim() }
+        : null,
+    // Codex renders the markdown as the whole "Codex just got an upgrade"
+    // modal when this entry is the operator's current model and the target
+    // slug is listed; {model_from}/{model_to} are substituted by the client.
+    upgrade: model.upgradeTo
+      ? {
+          model: model.upgradeTo.model,
+          migration_markdown: model.upgradeTo.markdown.trim(),
+        }
+      : null,
+    supports_reasoning_summaries: model.supportsReasoningSummaries === true,
+    default_reasoning_summary:
+      model.supportsReasoningSummaries === true
+        ? model.defaultReasoningSummary || "auto"
+        : "none",
     support_verbosity: false,
     default_verbosity: null,
     supports_search_tool: false,
     supports_image_detail_original: false,
     use_responses_lite: false,
-    multi_agent_version: "v1",
+    // Codex v2 collaboration only exposes spawn_agent model overrides whose
+    // catalog entry advertises the same backend version as the parent. Models
+    // opt in after their tool and encrypted-payload relay paths are verified.
+    multi_agent_version: model.multiAgentVersion || "v1",
   };
   if (typeof next.base_instructions === "string") {
     next.base_instructions = rewriteIdentity(next.base_instructions, model);
@@ -190,33 +313,85 @@ export function routedModel(template, model) {
   return next;
 }
 
-function nativeVersion(slug) {
-  const match = String(slug).match(/^gpt-(\d+)\.(\d+)(?:-|$)/);
-  return match ? [Number(match[1]), Number(match[2])] : undefined;
+export const AUTO_ANNOUNCE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+function formatTokenCount(tokens) {
+  if (tokens >= 995_000) {
+    const millions = Math.round((tokens / 1_000_000) * 10) / 10;
+    return `${millions % 1 === 0 ? Math.round(millions) : millions}M`;
+  }
+  return `${Math.round(tokens / 1000)}K`;
 }
 
-function currentNativeModels(models) {
-  const versions = [
-    ...new Set(
-      models
-        .filter((model) => model.visibility === "list")
-        .map((model) => nativeVersion(model.slug))
-        .filter(Boolean)
-        .map((version) => version.join(".")),
-    ),
-  ]
-    .sort((left, right) => {
-      const [leftMajor, leftMinor] = left.split(".").map(Number);
-      const [rightMajor, rightMinor] = right.split(".").map(Number);
-      return rightMajor - leftMajor || rightMinor - leftMinor;
-    })
-    .slice(0, 2);
-  const visibleVersions = new Set(versions);
-  return models.map((model) => {
-    if (model.visibility !== "list") return model;
-    const version = nativeVersion(model.slug);
-    if (!version || visibleVersions.has(version.join("."))) return model;
-    return { ...model, visibility: "hide" };
+function joinNaturally(parts) {
+  if (parts.length <= 1) return parts.join("");
+  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
+  return `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`;
+}
+
+// Announcement copy is assembled from verified registry capabilities only, so
+// it can never claim more than the picker metadata already does.
+function autoAnnouncementCopy(model) {
+  const details = [];
+  if (Number.isInteger(model.contextWindow)) {
+    details.push(`a ${formatTokenCount(model.contextWindow)}-token context window`);
+  }
+  const efforts = Array.isArray(model.reasoningLevels)
+    ? model.reasoningLevels.map((level) => level.effort)
+    : [];
+  if (efforts.length > 1) {
+    details.push(`reasoning efforts from ${efforts[0]} to ${efforts[efforts.length - 1]}`);
+  }
+  if ((model.inputModalities || []).includes("image")) {
+    details.push("image input");
+  }
+  const capabilities = details.length ? ` It comes with ${joinNaturally(details)}.` : "";
+  return `${model.displayName} just landed in your model picker.${capabilities}`;
+}
+
+// A new checked-in model announces itself for a window of rebuilds rather
+// than a single one, because catalogs rebuild on updates and provider toggles
+// and the operator may not launch Codex in between; Codex itself stops the
+// card after four showings per slug. The first capture seeds silently so an
+// install never announces the entire catalog, and locally curated models are
+// excluded because the operator added those deliberately. Only models whose
+// provider is selected and credentialed ever reach this list, so a model the
+// operator cannot use never announces.
+export function annotateNewModelAnnouncements(routedModelsList, announcedAt, userSlugs, now) {
+  const firstRun = announcedAt === null;
+  const nextAnnouncedAt = new Map(firstRun ? [] : announcedAt);
+  const models = routedModelsList.map((model) => {
+    if (!nextAnnouncedAt.has(model.slug)) {
+      nextAnnouncedAt.set(model.slug, firstRun ? 0 : now);
+    }
+    if (model.availabilityNux || userSlugs.has(model.slug)) return model;
+    const since = nextAnnouncedAt.get(model.slug);
+    if (since === 0 || now - since >= AUTO_ANNOUNCE_WINDOW_MS) return model;
+    return { ...model, availabilityNux: autoAnnouncementCopy(model) };
+  });
+  return { models, announcedAt: nextAnnouncedAt };
+}
+
+function readAnnouncedAt() {
+  if (!existsSync(ANNOUNCED_MODELS_PATH)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(ANNOUNCED_MODELS_PATH, "utf8"));
+    if (!parsed || typeof parsed.models !== "object" || Array.isArray(parsed.models)) {
+      return null;
+    }
+    return new Map(
+      Object.entries(parsed.models).filter(([, value]) => Number.isFinite(value)),
+    );
+  } catch {
+    // Corrupt state must reseed silently, not announce the whole catalog.
+    return null;
+  }
+}
+
+function writeAnnouncedAt(announcedAt) {
+  atomicJson(ANNOUNCED_MODELS_PATH, {
+    version: 1,
+    models: Object.fromEntries([...announcedAt.entries()].sort()),
   });
 }
 
@@ -237,7 +412,7 @@ export function buildMergedCatalog(native, routedModelsList, { includeNative = t
   }
   const models = new Map(
     includeNative
-      ? currentNativeModels(native.models).map((model) => [model.slug, model])
+      ? native.models.map((model) => [model.slug, normalizeNativeModel(model)])
       : [],
   );
   for (const model of routedModelsList) {
@@ -251,10 +426,7 @@ export function buildMergedCatalog(native, routedModelsList, { includeNative = t
 // levels. Each aliased model keeps a hidden entry under its canonical slug so
 // routing, doctor checks, and existing configs keep resolving it.
 export function buildLoginFreeCatalog(native, routedModelsList) {
-  const pickerModels = routedModelsList.filter(
-    (model) => model.pickerVisibility !== "hide",
-  );
-  const assignments = buildNativeAliasAssignments(native.models, pickerModels);
+  const assignments = buildNativeAliasAssignments(native.models, routedModelsList);
   const aliasedSlugs = new Set(assignments.map(({ model }) => model.slug));
   const aliases = Object.fromEntries(
     assignments.map(({ nativeModel, model }) => [nativeModel.slug, model.slug]),
@@ -274,9 +446,39 @@ export function buildLoginFreeCatalog(native, routedModelsList) {
 }
 
 function main() {
-  const routedModels = selectedConfiguredListedModels();
+  // The catalog is what Codex offers in its picker. Writing it from a checkout
+  // that does not own this state directory is how the picker ends up
+  // advertising models the running gateway has no route for.
+  assertStateOwnership("write the Codex model catalog");
+  const userSlugs = new Set(readUserModels().map((model) => String(model.slug)));
+  // Clamp before announcements and agent sync so every surface Codex reads —
+  // picker levels, defaults, and announcement copy — stays inside the effort
+  // vocabulary the installed build can actually deserialize.
+  const { models: routedModels, announcedAt } = annotateNewModelAnnouncements(
+    dedupeRoutedModels(
+      clampModelEfforts(
+        selectedConfiguredListedModels(),
+        codexEffortVocabulary(codexVersion()),
+      ),
+    ),
+    readAnnouncedAt(),
+    userSlugs,
+    Date.now(),
+  );
   const native = nativeCatalog();
-  const openaiAuthenticated = codexIsAuthenticated();
+  // Dropping every native model is destructive, so only do it when Codex
+  // actually answered that the session is signed out. If the probe could not
+  // run at all we do not know, and guessing "signed out" is what silently
+  // emptied the picker for Windows npm installs.
+  const auth = codexAuthStatus();
+  if (auth.reason === "probe-failed") {
+    throw new Error(
+      `Could not ask Codex whether it is signed in (${auth.code || "spawn failed"} running ${auth.binary}). ` +
+        "Refusing to rebuild the catalog, because assuming a signed-out session would remove every native model. " +
+        "Set CODEX_BIN to a runnable Codex CLI and try again.",
+    );
+  }
+  const openaiAuthenticated = auth.authenticated;
   const loginFree = loginFreeConfigured();
   const { models: merged, aliases } = loginFree
     ? buildLoginFreeCatalog(native, routedModels)
@@ -286,36 +488,38 @@ function main() {
         }),
         aliases: {},
       };
-  writeModelCatalogJson(merged);
+  atomicJson(MERGED_CATALOG_PATH, { models: merged });
   atomicJson(NATIVE_ALIAS_PATH, { version: 1, aliases });
-  const profileCatalog = rebuildExternalSubagentProfiles({
-    mergedCatalog: {
-      models: merged,
-      nativeProfiles: preserveNativeAgentProfiles(native),
-    },
-  });
-  const routedAgents = profileCatalog.externalProfiles;
-  const agentRegistrations = process.env.MODEL_ROUTER_SKIP_AGENT_REGISTRATION === "1"
-    ? { registered: [], skipped: [] }
-    : syncExternalAgentRegistrations(routedAgents);
+  writeAnnouncedAt(announcedAt);
+  const routedAgents = syncRoutedCodexAgents(routedModels);
   process.stdout.write(
     `${JSON.stringify({
       path: MERGED_CATALOG_PATH,
       models: merged.length,
       routed_models: routedModels.length,
       routed_agents: routedAgents.length,
-      registered_agents: agentRegistrations.registered.length,
       native_models: !loginFree && openaiAuthenticated
         ? merged.filter((model) => !MODEL_BY_SLUG.has(String(model.slug))).length
         : 0,
       aliased_models: Object.keys(aliases).length,
       login_free: loginFree,
       openai_authenticated: openaiAuthenticated,
+      openai_auth_reason: auth.reason,
       selected_model: selectedModel() || null,
     })}\n`,
   );
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main();
+  try {
+    main();
+  } catch (error) {
+    // Ownership conflicts are an operator mistake with a specific remedy, so
+    // print the guidance rather than a stack trace.
+    if (error?.code === "foreign_state_owner") {
+      console.error(error.message);
+      process.exit(1);
+    }
+    throw error;
+  }
 }

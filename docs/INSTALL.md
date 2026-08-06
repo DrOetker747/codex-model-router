@@ -1,20 +1,18 @@
 # Installation, migration, and upgrades
 
-This page covers the stable Codex target. Use the target-qualified command when
-the Cursor integration may also be present:
+This page covers the Codex target:
 
 ```sh
 ./bin/model-router codex doctor
-./bin/model-router cursor doctor
 ```
 
 ## Supported hosts
 
-| Host | Stable Codex surface | Experimental Cursor surface |
-| --- | --- | --- |
-| macOS | Codex App or CLI | Cursor local gateway |
-| Windows | Codex App or CLI | Cursor local gateway |
-| Linux | Codex CLI | Cursor local gateway |
+| Host | Codex surface |
+| --- | --- |
+| macOS | Codex App or CLI |
+| Windows | Codex App or CLI |
+| Linux | Codex CLI |
 
 Required software:
 
@@ -101,12 +99,22 @@ API-key providers use hidden prompts:
 ./bin/provider-key deepseek set
 ./bin/provider-key grok-api set
 ./bin/provider-key anthropic-api set
-./bin/provider-key opencode-go set
-./bin/provider-key opencode-go set-backup
 ./bin/provider-key ollama-cloud set
 ./bin/provider-key qwen-plan set
 ./bin/provider-key zai-coding set
 ```
+
+Replace a stored key by running `set` again. Delete one with `remove`, which
+also hides the provider from the model picker:
+
+```sh
+./bin/provider-key deepseek remove
+```
+
+The desktop app and macOS tray expose the same two actions per API provider:
+**Replace key** and **Remove**. Removal only deletes the key files the router
+manages — a key that also lives in the macOS Keychain or in an environment
+variable is reported as still active so you can clear it at the source.
 
 Grok OAuth uses the official Grok CLI session:
 
@@ -129,8 +137,8 @@ Windows:
 ./codex-router.ps1 provider-key anthropic-api set
 ```
 
-Kimi OAuth, Kimi Platform, OpenCode Go, DeepSeek, xAI, and Anthropic are
-separate account and billing systems. Never put a credential in chat, a command argument, shell history,
+Kimi OAuth, Kimi Platform, DeepSeek, xAI, and Anthropic are separate account and billing
+systems. Never put a credential in chat, a command argument, shell history,
 the provider registry, or a tracked file.
 
 Noninteractive setup can reuse already configured credentials:
@@ -168,19 +176,24 @@ Setup performs these operations in order:
 5. Generates separate random Codex caller and internal-service keys.
 6. Captures the native Codex model catalog and adds only selected provider models.
 7. Generates gateway routes from `config/providers.json`.
-8. Adds the marked capability-bearing base URL and catalog block, then protects
-   the Codex config and its backup for the current user.
-9. Installs the platform's per-user background service.
-10. Waits for every local layer to report its expected service identity.
-11. Records the installed commit and provider selection.
-12. Runs the doctor.
+8. Adds the marked capability-bearing base URL and catalog block. When the user
+   has not set an agent concurrency limit, it also configures six spawned-agent
+   slots so native Kimi/Grok/GPT collaboration does not remain on Codex's small
+   v2 default. Existing `[agents]` limits are preserved.
+9. Protects the Codex config and its backup for the current user.
+10. Installs the platform's per-user background service.
+11. Waits for every local layer to report its expected service identity.
+12. Records the installed commit and provider selection.
+13. Runs the doctor.
 
 If config or service installation fails, the new service and marked config block
 are removed. If a legacy migration was part of the transaction, its exact config
 and service definition are restored as well.
 
 The installer does not kill an unknown process on ports 4100–4103 and does not
-replace an unmarked user-owned `openai_base_url` or `model_catalog_json`.
+replace an unmarked user-owned `openai_base_url`, `model_catalog_json`, or agent
+concurrency value. Disabling the router removes only its marked concurrency
+default; a user-owned value remains intact.
 
 ## Recognized older installations
 
@@ -236,6 +249,7 @@ Live quota-consuming verification is separate:
 ## Update and rollback
 
 ```sh
+./bin/update check
 ./bin/update
 ./bin/rollback
 ```
@@ -243,16 +257,22 @@ Live quota-consuming verification is separate:
 Windows:
 
 ```powershell
+./codex-router.ps1 update check
 ./codex-router.ps1 update
 ./codex-router.ps1 rollback
 ```
 
 The updater requires a clean checkout on the recognized GitHub origin. It
 fetches `origin/main`, retains the current revision under
-`refs/codex-router/rollback`, fast-forwards an unmodified checkout, or safely
-rebases a clean local provider extension, and reinstalls. A rebase conflict
-stops before installation. A failed install automatically checks out and
-reinstalls the previous revision.
+`refs/codex-router/rollback`, fast-forwards, and reinstalls. A failed install
+automatically checks out and reinstalls the previous revision. `update check`
+only compares the revisions and changes nothing.
+
+The reinstall skips dependency work whose inputs are unchanged, so an update
+that carries no `package-lock.json` or LiteLLM pin change costs a service
+restart rather than a full `npm ci` and PyPI resolution. `./bin/doctor --fix`
+rebuilds them regardless, as does `./bin/install --force-deps`
+(`./install.ps1 -CheckoutInstall -ForceDeps` on Windows).
 
 When upgrading from a release without caller capabilities, the installer
 generates one, replaces only the marked managed URL, tightens config permissions,

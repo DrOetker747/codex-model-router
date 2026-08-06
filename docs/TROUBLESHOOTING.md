@@ -4,7 +4,6 @@ Start with:
 
 ```sh
 ./bin/model-router codex doctor
-./bin/model-router cursor doctor
 ```
 
 Every `FAIL` includes a targeted fix. To rebuild only repository-managed files,
@@ -22,11 +21,36 @@ If a recognized older Kimi router is reported:
 
 Neither command prints credential values. Repair refuses unknown router owners.
 
-## External models are missing from the picker
+## State directory belongs to another checkout
 
-The steps below are for Codex. For Cursor, use
-`./bin/model-router cursor doctor` and verify the manually configured connection
-values described in the Cursor guide.
+If `doctor` reports a state ownership failure, you are running from a clone
+that did not perform the install. The safe fix is to repair through the
+checkout that owns the installed state:
+
+```sh
+./bin/model-router codex doctor --fix
+```
+
+When the recorded owner still exists, this command runs the repair there and
+keeps the installed checkout unchanged. It deliberately transfers ownership to
+the current checkout only when the recorded owner is gone or you set
+`MODEL_ROUTER_ALLOW_FOREIGN_STATE=1`.
+
+To inspect the recorded owner:
+
+```sh
+# Find the owning checkout from the state manifest.
+STATE_DIR="${MODEL_ROUTER_STATE_DIR:-${CODEX_ROUTER_STATE_DIR:-${KIMI_CODEX_STATE_DIR:-${HOME}/.codex/codex-router}}}"
+cat "$STATE_DIR/install-manifest.json" | sed -n '1,80p'
+```
+
+To deliberately switch ownership to the checkout you are running from:
+
+```sh
+MODEL_ROUTER_ALLOW_FOREIGN_STATE=1 ./bin/model-router codex doctor --fix
+```
+
+## External models are missing from the picker
 
 ```sh
 ./bin/providers
@@ -162,10 +186,11 @@ release, curate it for your own machine:
 ./bin/curate-models deepseek
 ```
 
-Curated entries live in the state directory's `user-models.json` with
-conservative default metadata, are skipped automatically if a later registry
-update ships the same model, and are removed by re-running the command and
-deselecting them.
+Curated entries live in the state directory's `user-models.json` with the
+context window, image support, and reasoning efforts you provide during
+curation (conservative defaults otherwise), are skipped automatically if a
+later registry update ships the same model, and are removed by re-running
+the command and deselecting them.
 
 ## Native GPT models stopped working
 

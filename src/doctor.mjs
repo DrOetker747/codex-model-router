@@ -3,11 +3,8 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { validCallerSecret } from "./caller-auth.mjs";
-import { findCodexBinary } from "./codex-binary.mjs";
-import {
-  routedCodexAgentStatus,
-  selectedExternalSubagentModels,
-} from "./codex-agent-catalog.mjs";
+import { codexAuthStatus, findCodexBinary } from "./codex-binary.mjs";
+import { routedCodexAgentStatus } from "./codex-agent-catalog.mjs";
 import { privateFileIsProtected } from "./file-security.mjs";
 import { grokCliPreflight } from "./grok-cli.mjs";
 import { detectLegacyInstallations } from "./legacy-migration.mjs";
@@ -26,8 +23,10 @@ import {
   SOURCE_ROOT,
 } from "./paths.mjs";
 import { credentialStatus } from "./provider-credentials.mjs";
+import { stateOwnershipStatus } from "./state-owner.mjs";
 import {
   providerSelectionStatus,
+  selectedConfiguredListedModels,
 } from "./provider-selection.mjs";
 
 const checks = [];
@@ -53,6 +52,33 @@ function childJson(script, args = []) {
 }
 
 function repair() {
+  const ownership = stateOwnershipStatus();
+  if (
+    ownership.foreign &&
+    !ownership.overridden &&
+    ownership.owner &&
+    existsSync(path.join(ownership.owner, "src", "doctor.mjs")) &&
+    existsSync(path.join(ownership.owner, "bin", "install"))
+  ) {
+    // A foreign doctor run must not repoint the live installation by accident.
+    // The recorded owner still exists, so run the same repair from there; only
+    // an explicit override or a fresh install transfers ownership.
+    process.stderr.write(
+      `codex-router: repairing from the owning checkout ${ownership.owner}\n`,
+    );
+    const result = spawnSync(
+      process.execPath,
+      [path.join(ownership.owner, "src", "doctor.mjs"), ...process.argv.slice(2)],
+      { cwd: ownership.owner, env: process.env, stdio: "inherit" },
+    );
+    if (result.error) {
+      throw new Error(
+        `Could not run doctor from the owning checkout ${ownership.owner}: ${result.error.message}`,
+      );
+    }
+    process.exit(result.status ?? 1);
+  }
+
   const legacy = detectLegacyInstallations();
   if (legacy.unknownConflict) {
     throw new Error(
@@ -68,6 +94,8 @@ function repair() {
     childJson("legacy-migration.mjs", ["apply", "--yes"]);
   }
   const repairStdio = jsonOutput ? ["inherit", "ignore", "inherit"] : "inherit";
+  // Repair rebuilds dependencies unconditionally: the fingerprints an ordinary
+  // install trusts cannot see a corrupted node_modules or virtual environment.
   const result = process.platform === "win32"
     ? spawnSync(
         "powershell.exe",
@@ -79,10 +107,11 @@ function repair() {
           "-File",
           path.join(SOURCE_ROOT, "install.ps1"),
           "-CheckoutInstall",
+          "-ForceDeps",
         ],
         { cwd: SOURCE_ROOT, env: process.env, stdio: repairStdio },
       )
-    : spawnSync(path.join(SOURCE_ROOT, "bin", "install"), [], {
+    : spawnSync(path.join(SOURCE_ROOT, "bin", "install"), ["--force-deps"], {
         cwd: SOURCE_ROOT,
         env: process.env,
         stdio: repairStdio,
@@ -132,6 +161,18 @@ add(
   codex || "not found",
   "Install Codex or set CODEX_BIN to the Codex CLI binary.",
 );
+// A Codex binary that cannot be spawned reads as "signed out" everywhere it is
+// probed, which silently removes every native model from the picker. Surface it
+// as its own failure instead of letting it masquerade as a logged-out session.
+const codexAuth = codexAuthStatus();
+add(
+  codexAuth.reason === "probe-failed" ? "fail" : "ok",
+  "Codex sign-in probe",
+  codexAuth.reason === "probe-failed"
+    ? `could not run ${codexAuth.binary} (${codexAuth.code || "spawn failed"})`
+    : codexAuth.reason,
+  "Set CODEX_BIN to a Codex CLI Node can spawn; on Windows use the codex.cmd shim, not the extensionless one.",
+);
 add(
   existsSync(CONFIG_PATH) ? "ok" : "fail",
   "Codex config",
@@ -158,6 +199,8 @@ let requiredRoutedModels = [];
 let requiredModels = new Set();
 try {
   selection = providerSelectionStatus();
+  requiredRoutedModels = selectedConfiguredListedModels();
+  requiredModels = new Set(requiredRoutedModels.map((model) => model.slug));
   add(
     selection.providers.length ? "ok" : "fail",
     "Enabled providers",
@@ -182,10 +225,6 @@ try {
 } catch {
   // Reported as a failed catalog check below.
 }
-requiredRoutedModels = selectedExternalSubagentModels({
-  mergedCatalog: { models: catalogModels },
-});
-requiredModels = new Set(requiredRoutedModels.map((model) => model.slug));
 const catalogOk =
   requiredModels.size > 0 &&
   [...requiredModels].every((slug) => catalogModels.some((model) => model.slug === slug));
@@ -194,6 +233,36 @@ add(
   "Merged catalog",
   catalogOk ? `${requiredModels.size} routed models` : MERGED_CATALOG_PATH,
   "Run ./bin/refresh-catalog, or ./bin/doctor --fix if files are missing.",
+);
+// The catalog tells Codex which models to offer; the gateway config decides
+// which it can actually route. When a second checkout writes one of them the
+// two drift apart, and Codex forwards the unroutable model upstream, where it
+// fails with a confusing account-level error instead of a routing error.
+const ownership = stateOwnershipStatus();
+add(
+  ownership.foreign ? "fail" : "ok",
+  "State directory owner",
+  ownership.foreign
+    ? `owned by ${ownership.owner}, running from ${ownership.current}`
+    : ownership.owner || "unowned (first install)",
+  "Run router commands from the owning checkout, or reinstall from this one to take ownership.",
+);
+let unroutable = [];
+try {
+  const rendered = readFileSync(LITELLM_CONFIG_PATH, "utf8");
+  unroutable = requiredRoutedModels
+    .filter((model) => !rendered.includes(`model_name: "${model.gatewayModel}"`))
+    .map((model) => model.slug);
+} catch {
+  // The missing-config case is already reported by the gateway config check.
+}
+add(
+  unroutable.length ? "fail" : "ok",
+  "Catalog matches gateway routes",
+  unroutable.length
+    ? `${unroutable.length} offered model(s) have no gateway route: ${unroutable.join(", ")}`
+    : `${requiredRoutedModels.length} routed models`,
+  "Run ./bin/doctor --fix from the owning checkout, then fully quit and reopen Codex.",
 );
 const agentStatus = routedCodexAgentStatus(requiredRoutedModels);
 add(

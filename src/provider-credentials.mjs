@@ -13,6 +13,7 @@ import path from "node:path";
 
 import { protectPrivateFile } from "./file-security.mjs";
 import { LEGACY_STATE_DIRS, STATE_DIR, TARGET } from "./paths.mjs";
+import { targetCli } from "./target-integration.mjs";
 import { PROVIDERS } from "./model-registry.mjs";
 
 export function apiProvider(providerId) {
@@ -23,20 +24,23 @@ export function apiProvider(providerId) {
   return provider;
 }
 
+export const MAX_KEY_SLOTS = 5;
+
 export function primaryCredentialPath(provider) {
   return path.join(STATE_DIR, provider.credential.file);
 }
 
-export function fallbackCredentialPaths(provider) {
-  return (provider.credential.fallbackFiles || []).map((name) => path.join(STATE_DIR, name));
+// Slot 0 is the provider's primary key file; higher slots live alongside it
+// as `<name>-2.secret` .. `<name>-5.secret` so a single provider can hold
+// several billed subscriptions and rotate between them on exhaustion.
+export function slotCredentialFile(provider, slotIndex) {
+  if (slotIndex === 0) return provider.credential.file;
+  const base = provider.credential.file.replace(/\.secret$/, "");
+  return `${base}-${slotIndex + 1}.secret`;
 }
 
 export function credentialPaths(provider) {
-  const names = [
-    provider.credential.file,
-    ...(provider.credential.fallbackFiles || []),
-    ...(provider.credential.legacyFiles || []),
-  ];
+  const names = [provider.credential.file, ...(provider.credential.legacyFiles || [])];
   const candidates = names.flatMap((name) => [
     path.join(STATE_DIR, name),
     ...LEGACY_STATE_DIRS.map((directory) => path.join(directory, name)),
@@ -62,35 +66,62 @@ function keyFromKeychain(provider) {
 }
 
 export function resolveProviderCredential(providerOrId, options = {}) {
-  return resolveProviderCredentials(providerOrId, options)[0];
-}
-
-export function resolveProviderCredentials(providerOrId, options = {}) {
   const provider =
     typeof providerOrId === "string" ? apiProvider(providerOrId) : providerOrId;
-  const credentials = [];
-  const seen = new Set();
-  const add = (credential) => {
-    if (!credential?.value || seen.has(credential.value)) return;
-    seen.add(credential.value);
-    credentials.push(credential);
-  };
   if (!options.persistent) {
     for (const name of provider.credential.environment) {
       const value = process.env[name]?.trim();
-      if (value) add({ value, source: `environment (${name})`, persistent: false });
+      if (value) return { value, source: `environment (${name})`, persistent: false };
     }
   }
   for (const candidate of credentialPaths(provider)) {
     if (!existsSync(candidate)) continue;
     const value = readFileSync(candidate, "utf8").trim();
     if (value) {
-      add({ value, source: `protected file (${candidate})`, persistent: true });
+      return { value, source: `protected file (${candidate})`, persistent: true };
     }
   }
   const keychain = keyFromKeychain(provider);
-  if (keychain) add({ ...keychain, persistent: true });
-  return credentials;
+  return keychain ? { ...keychain, persistent: true } : undefined;
+}
+
+// All key slots configured for a provider, slot 0 first. Slot 0 honors the
+// environment override and legacy key locations exactly like
+// resolveProviderCredential; higher slots are numbered files in the state dir.
+export function resolveProviderCredentialSlots(providerOrId, options = {}) {
+  const provider =
+    typeof providerOrId === "string" ? apiProvider(providerOrId) : providerOrId;
+  const slots = [];
+  if (!options.persistent) {
+    for (const name of provider.credential.environment) {
+      const value = process.env[name]?.trim();
+      if (value) {
+        slots.push({ value, source: `environment (${name})`, persistent: false, slot: 0 });
+        break;
+      }
+    }
+  }
+  for (const candidate of credentialPaths(provider)) {
+    if (!existsSync(candidate)) continue;
+    const value = readFileSync(candidate, "utf8").trim();
+    if (value) {
+      slots.push({ value, source: `protected file (${candidate})`, persistent: true, slot: 0 });
+      break;
+    }
+  }
+  for (let slot = 1; slot < MAX_KEY_SLOTS; slot += 1) {
+    const candidate = path.join(STATE_DIR, slotCredentialFile(provider, slot));
+    if (!existsSync(candidate)) continue;
+    const value = readFileSync(candidate, "utf8").trim();
+    if (value) {
+      slots.push({ value, source: `protected file (${candidate})`, persistent: true, slot });
+    }
+  }
+  if (slots.length === 0) {
+    const keychain = keyFromKeychain(provider);
+    if (keychain) slots.push({ ...keychain, persistent: true, slot: 0 });
+  }
+  return slots;
 }
 
 export function credentialStatus(providerOrId, options = {}) {
@@ -101,31 +132,26 @@ export function credentialStatus(providerOrId, options = {}) {
     ? { configured: true, source: credential.source, persistent: credential.persistent }
     : {
         configured: false,
-        setup: TARGET === "cursor"
-          ? `Run ./bin/model-router cursor provider-key ${provider.id} set`
-          : `Run ./bin/provider-key ${provider.id} set`,
+        setup: `Run ${targetCli(`provider-key ${provider.id} set`)}`,
       };
 }
 
 export function writeProviderCredential(providerOrId, value) {
-  const provider =
-    typeof providerOrId === "string" ? apiProvider(providerOrId) : providerOrId;
-  return writeCredentialFile(primaryCredentialPath(provider), value);
+  return writeProviderCredentialSlot(providerOrId, value, 0);
 }
 
-export function writeProviderFallbackCredential(providerOrId, value, index = 0) {
+export function writeProviderCredentialSlot(providerOrId, value, slotIndex = 0) {
   const provider =
     typeof providerOrId === "string" ? apiProvider(providerOrId) : providerOrId;
-  const target = fallbackCredentialPaths(provider)[index];
-  if (!target) throw new Error(`${provider.displayName} has no backup key slot.`);
-  return writeCredentialFile(target, value);
-}
-
-function writeCredentialFile(target, value) {
   const key = String(value || "").trim();
   if (!key) throw new Error("No API key was entered; nothing changed.");
+  const slot = Number(slotIndex);
+  if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_KEY_SLOTS) {
+    throw new Error(`API key slot must be between 1 and ${MAX_KEY_SLOTS}.`);
+  }
   mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
   chmodSync(STATE_DIR, 0o700);
+  const target = path.join(STATE_DIR, slotCredentialFile(provider, slot));
   const temporary = `${target}.tmp.${process.pid}`;
   writeFileSync(temporary, `${key}\n`, { encoding: "utf8", mode: 0o600 });
   try {
@@ -148,7 +174,26 @@ export function removeProviderCredential(providerOrId) {
     unlinkSync(candidate);
     removed += 1;
   }
+  for (let slot = 1; slot < MAX_KEY_SLOTS; slot += 1) {
+    const candidate = path.join(STATE_DIR, slotCredentialFile(provider, slot));
+    if (!existsSync(candidate)) continue;
+    unlinkSync(candidate);
+    removed += 1;
+  }
   return removed;
+}
+
+export function removeProviderCredentialSlot(providerOrId, slotIndex) {
+  const provider =
+    typeof providerOrId === "string" ? apiProvider(providerOrId) : providerOrId;
+  const slot = Number(slotIndex);
+  if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_KEY_SLOTS) {
+    throw new Error(`API key slot must be between 1 and ${MAX_KEY_SLOTS}.`);
+  }
+  const target = path.join(STATE_DIR, slotCredentialFile(provider, slot));
+  if (!existsSync(target)) return 0;
+  unlinkSync(target);
+  return 1;
 }
 
 export function credentialFileMode(providerOrId) {

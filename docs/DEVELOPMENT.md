@@ -16,7 +16,7 @@
 - `src/provider-selection.mjs` controls which tested models enter the picker.
 - `src/start.mjs` supervises the loopback processes.
 - `src/service-*.mjs` install per-user services for macOS, Linux, and Windows.
-- `src/paths.mjs` isolates app targets, state roots, ports, and service names.
+- `src/paths.mjs` defines state roots, ports, and service names.
 
 ## Add an API-key provider
 
@@ -68,6 +68,13 @@ model a registry update later ships — skips the entry and surfaces it in
 never take the router down. The listed-model live-test requirement applies to
 registry submissions; curated entries are explicitly local-only.
 
+Curated entries get their metadata from the user, not from any online
+catalog: interactive curation asks for each new model's context window,
+image support, and reasoning efforts (`--efforts` sets the effort ladder in
+the deterministic `--models` form), and everything defaults conservatively
+when unanswered. The stored entries in `user-models.json` are plain local
+state — edit any value in place and re-run `./bin/install` to apply.
+
 ## Tests
 
 ```sh
@@ -82,7 +89,7 @@ npm audit --omit=dev
 The test suite verifies native header forwarding, external credential
 isolation, Kimi and DeepSeek rewriting, registry-generated gateway routes,
 Zstandard request decoding, both Codex compaction formats, legacy migration,
-provider selection, target isolation, Anthropic API forwarding, discovery
+provider selection, port defaults, Anthropic API forwarding, discovery
 comparison, and service rendering for all three service platforms.
 
 CI runs the Node suite on macOS, Linux, and Windows. Tagged releases are built

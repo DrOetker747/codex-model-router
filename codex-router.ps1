@@ -1,8 +1,8 @@
 $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
 $Target = if ($env:MODEL_ROUTER_TARGET) { $env:MODEL_ROUTER_TARGET } else { "codex" }
-if ($Target -notin @("codex", "cursor")) {
-  throw "MODEL_ROUTER_TARGET must be codex or cursor."
+if ($Target -ne "codex") {
+  throw "MODEL_ROUTER_TARGET must be codex."
 }
 $Command = if ($args.Count) { [string]$args[0] } else { "status" }
 $Arguments = if ($args.Count -gt 1) { @($args[1..($args.Count - 1)]) } else { @() }
@@ -14,10 +14,6 @@ $Commands = @(
 if ($Command -notin $Commands) {
   throw "Unknown command '$Command'. Choose: $($Commands -join ', ')."
 }
-if ($Target -eq "cursor" -and $Command -eq "smoke-test") {
-  throw "Command '$Command' is currently available only for the Codex target."
-}
-
 function Invoke-RouterNode([string]$Script, [string[]]$ScriptArguments = @()) {
   & node (Join-Path $Root $Script) @ScriptArguments
   if ($LASTEXITCODE -ne 0) {
@@ -27,32 +23,31 @@ function Invoke-RouterNode([string]$Script, [string[]]$ScriptArguments = @()) {
 
 switch ($Command) {
   "setup" {
-    $Script = if ($Target -eq "cursor") { "src\cursor-setup.mjs" } else { "src\setup.mjs" }
-    Invoke-RouterNode $Script $Arguments
+    Invoke-RouterNode "src\setup.mjs" $Arguments
   }
   "doctor" {
-    $Script = if ($Target -eq "cursor") { "src\cursor-doctor.mjs" } else { "src\doctor.mjs" }
-    Invoke-RouterNode $Script $Arguments
+    Invoke-RouterNode "src\doctor.mjs" $Arguments
   }
   "status" {
-    $Script = if ($Target -eq "cursor") { "src\cursor-doctor.mjs" } else { "src\doctor.mjs" }
-    Invoke-RouterNode $Script $Arguments
+    Invoke-RouterNode "src\doctor.mjs" $Arguments
   }
   "providers" { Invoke-RouterNode "src\providers.mjs" $Arguments }
   "provider-key" { Invoke-RouterNode "src\provider-key.mjs" $Arguments }
   "install" { & (Join-Path $Root "install.ps1") -CheckoutInstall -Target $Target }
   "enable" { & (Join-Path $Root "install.ps1") -CheckoutInstall -Target $Target }
   "disable" {
-    $Script = if ($Target -eq "cursor") { "src\cursor-config-manager.mjs" } else { "src\config-manager.mjs" }
-    Invoke-RouterNode $Script @("disable")
+    Invoke-RouterNode "src\config-manager.mjs" @("disable")
     Invoke-RouterNode "src\service.mjs" @("uninstall")
   }
   "uninstall" {
-    $Script = if ($Target -eq "cursor") { "src\cursor-config-manager.mjs" } else { "src\config-manager.mjs" }
-    Invoke-RouterNode $Script @("disable")
+    Invoke-RouterNode "src\config-manager.mjs" @("disable")
     Invoke-RouterNode "src\service.mjs" @("uninstall")
   }
-  "update" { Invoke-RouterNode "src\update.mjs" @("update") }
+  "update" {
+    # `update check` stays a read-only comparison; a bare `update` installs.
+    $UpdateArguments = if ($Arguments.Count) { $Arguments } else { @("update") }
+    Invoke-RouterNode "src\update.mjs" $UpdateArguments
+  }
   "rollback" { Invoke-RouterNode "src\update.mjs" @("rollback") }
   "support-bundle" { Invoke-RouterNode "src\support-bundle.mjs" $Arguments }
   "smoke-test" {

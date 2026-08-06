@@ -72,6 +72,7 @@ fn main() {
             install_provider_cli,
             connect_oauth,
             save_api_key,
+            remove_api_key,
             set_provider_enabled,
             set_login_free,
             set_island_enabled,
@@ -283,6 +284,25 @@ async fn save_api_key(
     })
     .await
     .map_err(|_| "The API key operation did not finish.".to_string())?
+}
+
+// The control plane already drops the provider from the Codex selection when a
+// key file is deleted, so this only has to make that selection live.
+#[tauri::command]
+async fn remove_api_key(state: State<'_, RouterState>, provider: String) -> Result<Value, String> {
+    validate_provider_kind(&provider, ProviderKind::Api)?;
+    let router = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let removal = run_control_json(&router, &["credential", &provider, "--remove"], None)?;
+        let _ = run_control(
+            &router,
+            &["apply", "--targets", "codex", "--activate"],
+            None,
+        );
+        Ok(removal)
+    })
+    .await
+    .map_err(|_| "The API key removal did not finish.".to_string())?
 }
 
 #[tauri::command]

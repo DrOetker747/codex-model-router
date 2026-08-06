@@ -2,7 +2,6 @@ import { PORTS, TARGET, loopback } from "./paths.mjs";
 
 const SERVICE_BY_TARGET = {
   codex: "codex-router",
-  cursor: "cursor-router",
 };
 
 export async function waitForRouterHealth({

@@ -6,6 +6,13 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 case $(uname -s) in
   Darwin)
     bundle_dir=$("$repo_dir/scripts/build-macos-tray-app.sh")
+    # A running tray keeps executing its old binary; replace it before opening
+    # the rebuilt bundle so updates take effect immediately.
+    if pgrep -x ModelRouterTray >/dev/null 2>&1; then
+      osascript -e 'tell application id "io.github.codex-router.tray" to quit' >/dev/null 2>&1 \
+        || killall -QUIT ModelRouterTray >/dev/null 2>&1 || true
+      sleep 1
+    fi
     open "$bundle_dir"
     ;;
   Linux)

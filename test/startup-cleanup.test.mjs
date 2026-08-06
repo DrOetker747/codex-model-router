@@ -76,7 +76,7 @@ test("startup failure terminates services that already became healthy", { timeou
     assert.match(errors, /\[model-router\] startup failed/);
     assert.match(
       errors,
-      /startup failed: Service exited before becoming healthy at http:\/\/127\.0\.0\.1:\d+\/health\/liveliness/,
+      /startup failed: LiteLLM gateway exited before becoming healthy\./,
     );
     assert.doesNotMatch(errors, /startup-internal-key-with-sufficient-length/);
     assert.doesNotMatch(errors, /startup-caller-key-with-sufficient-length/);

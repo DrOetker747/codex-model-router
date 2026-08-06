@@ -8,9 +8,43 @@ active. The tray shows Codex service state, an all-provider usage overview,
 active-provider detail, and provider setup shared with the existing
 command-line control plane.
 
-The tray currently focuses on Codex. Cursor does not appear in this interface,
-and the app does not disable, uninstall, or change its existing router
-configuration.
+The tray focuses on Codex and does not disable, uninstall, or change the
+existing router configuration.
+
+## Start at login
+
+The first time the tray runs from its app bundle, it registers itself as a
+macOS login item so it reopens automatically after a reboot — no more manual
+`./bin/model-router-tray` after every sign-in. macOS shows its standard
+"added a login item" notice, and the Settings tab gains a **Start at login**
+toggle backed by `SMAppService`, so the item is also visible and removable
+under System Settings › General › Login Items. The automatic registration
+happens only once: if you turn the item off in either place, the tray never
+re-adds it. The login item points at the built bundle (`dist/Model
+Router.app` by default), so rerun `./bin/model-router-tray` after an update
+to rebuild the binary the login item launches. If the bundle moves after that
+first launch (for example from a checkout on a removable volume to the stable
+install), the next launch replaces the old login-item path with the current
+bundle instead of leaving a broken item behind. Running the bare executable
+via `swift run` provides no bundle identity, so the toggle is hidden there.
+The router's background service is a separate launchd agent and keeps running
+regardless of this setting.
+
+## Show tray only while Codex runs
+
+The Settings tab's **Show tray** control chooses when the tray surfaces are
+visible. **Always** (the default) keeps the menu bar icon present like any
+menu bar app. **With Codex** ties every surface — menu bar icon, Dynamic
+Island, and desktop panel — to the Codex and ChatGPT desktop apps
+(`com.openai.codex`, `com.openai.chat`): the tray appears when either app
+launches and disappears when the last one quits. The tray process itself
+stays resident as a lightweight watcher; quitting on app exit would leave
+nothing around to notice the next launch. Combined with **Start at login**,
+this makes the tray fully automatic: it waits invisibly after a reboot and
+shows up exactly while Codex is open. While hidden, reopen Codex (or run
+`defaults write io.github.codex-router.tray ModelRouterTray.presenceMode
+always` and relaunch) to reach the toggle again. The router's background
+service is unaffected by visibility.
 
 ## Provider usage
 
@@ -98,38 +132,6 @@ appearance. It intentionally uses standard system typography, controls, and
 separators rather than applying a second opaque dashboard skin inside the
 popover.
 
-## Focused model picker
-
-The separate **Model Picker** menu-bar app keeps Codex's main picker concise
-while retaining access to every routed OpenCode model. It has three searchable
-views:
-
-- **SOTA** contains the current native GPT and leading external models.
-- **OpenCode Go** contains every discovered Go model, including hidden older or
-  cheaper fallbacks.
-- **Free** contains only `big-pickle` and IDs ending in `-free`. Paid Zen models
-  are excluded before catalog merge.
-
-Favorites are stored only in macOS user defaults. After selecting a model, the
-app asks whether to save it for a new task or gracefully restart Codex. It never
-force-quits Codex and never changes a running task.
-
-The gear button opens provider settings. Connected providers can be enabled or
-hidden, while unconfigured API providers accept a key in a native secure field.
-Keys travel to the control process through standard input and are never stored
-in app preferences or command arguments. A provider without usable credentials
-cannot appear in SOTA. The provider supplying the current model cannot be
-disabled until another model is selected.
-
-Build or refresh the installed app with:
-
-```sh
-./bin/model-picker
-```
-
-The picker reads the router snapshot on every refresh, so newly discovered Go
-and Free models appear without an app update.
-
 Run it from a stable checkout on macOS:
 
 ```sh
@@ -140,6 +142,12 @@ The app builds a local `dist/Model Router.app` bundle and opens it. The bundle
 records the checkout path used at build time, so rebuild it after moving the
 repository.
 
+`bin/model-router-tray` replaces an already-running tray with the rebuilt
+bundle before opening it, and `codex update` rebuilds and relaunches an
+installed tray from the updated checkout whether it lives in the checkout's
+`dist` directory, `~/Applications`, or the registered login-item bundle, so
+the companion stays current without a manual rerun.
+
 Provider changes apply automatically. Enabling, disabling, signing in, or
 adding an API key updates Codex immediately; the provider row shows progress
 while the router configuration and service are refreshed. If applying fails,
@@ -149,7 +157,9 @@ The **Update & Verify** maintenance button applies the checked-out `main`
 revision to the per-user Codex installation, then runs the Codex doctor. It
 shows progress while both commands run and reports whether routed model agents
 and the rest of the installation passed verification. Restart Codex afterward
-to load updated models and custom agents.
+to load updated models and custom agents. The command targets the checkout
+recorded as the installation owner, so a tray bundle left over from an older
+checkout cannot refresh the wrong router instead of the installed one.
 
 The **Use without OpenAI login** switch changes new Codex sessions to the
 managed custom router provider. At least one external provider must be connected

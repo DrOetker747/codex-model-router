@@ -1,8 +1,37 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { runCodexMaintenance } from "../src/codex-maintenance.mjs";
+import { maintenanceSourceRoot, runCodexMaintenance } from "../src/codex-maintenance.mjs";
+
+test("maintenance targets the checkout that owns the installed router", () => {
+  const owner = mkdtempSync(path.join(os.tmpdir(), "codex-router-owner-"));
+  try {
+    mkdirSync(path.join(owner, ".git"));
+    const manifest = {
+      version: 1,
+      current: { sourceRoot: owner },
+    };
+    assert.equal(
+      maintenanceSourceRoot("/Users/example/Code/codex-router", manifest),
+      owner,
+    );
+  } finally {
+    rmSync(owner, { recursive: true, force: true });
+  }
+});
+
+test("maintenance falls back to the tray checkout when no owner exists", () => {
+  assert.equal(
+    maintenanceSourceRoot("/Users/example/Code/codex-router", {
+      version: 1,
+      current: {},
+    }),
+    "/Users/example/Code/codex-router",
+  );
+});
 
 test("tray maintenance runs update before doctor", () => {
   const calls = [];

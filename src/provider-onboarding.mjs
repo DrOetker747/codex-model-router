@@ -12,9 +12,15 @@ import { grokOAuthStatus } from "./grok-oauth-status.mjs";
 import { KIMI_CLI_NPM_PACKAGE } from "./kimi-oauth-onboarding.mjs";
 import { PROVIDERS } from "./model-registry.mjs";
 import { kimiOAuthStatus } from "./oauth-status.mjs";
-import { credentialStatus, writeProviderCredential } from "./provider-credentials.mjs";
+import {
+  apiProvider,
+  credentialStatus,
+  removeProviderCredential,
+  writeProviderCredential,
+} from "./provider-credentials.mjs";
+import { disableProvider } from "./provider-selection.mjs";
 
-const OAUTH_CLIS = Object.freeze({
+const SIGN_IN_CLIS = Object.freeze({
   "kimi-oauth": {
     executable: "kimi",
     npmPackage: KIMI_CLI_NPM_PACKAGE,
@@ -43,7 +49,7 @@ function commandPath(name) {
 }
 
 export function oauthCliPath(providerId) {
-  const cli = OAUTH_CLIS[providerId];
+  const cli = SIGN_IN_CLIS[providerId];
   if (!cli) throw new Error(`Unknown OAuth provider: ${providerId}`);
   if (providerId === "grok-oauth") return grokCliPath();
   const discovered = commandPath(cli.executable);
@@ -52,7 +58,7 @@ export function oauthCliPath(providerId) {
 }
 
 export function oauthLoginArgs(providerId) {
-  const cli = OAUTH_CLIS[providerId];
+  const cli = SIGN_IN_CLIS[providerId];
   if (!cli) throw new Error(`Unknown OAuth provider: ${providerId}`);
   return [...cli.loginArgs];
 }
@@ -64,8 +70,11 @@ function oauthConfigured(providerId) {
 }
 
 export function providerOnboardingSnapshot() {
+  // Protocol variants share their parent's key and selection, so onboarding
+  // surfaces (tray, guided setup) offer one entry per family.
+  const selectable = [...PROVIDERS.values()].filter((provider) => !provider.variantOf);
   return {
-    providers: [...PROVIDERS.values()].map((provider) => {
+    providers: selectable.map((provider) => {
       if (provider.kind === "oauth") {
         const cliPath = oauthCliPath(provider.id);
         const cli = provider.id === "grok-oauth"
@@ -114,7 +123,7 @@ function npmPath() {
 }
 
 export function installOauthCli(providerId) {
-  const cli = OAUTH_CLIS[providerId];
+  const cli = SIGN_IN_CLIS[providerId];
   if (!cli) throw new Error(`Unknown OAuth provider: ${providerId}`);
   if (providerId === "grok-oauth") {
     const preflight = grokCliPreflight();
@@ -163,4 +172,21 @@ export function loginOauthProvider(providerId) {
 
 export function saveApiCredential(providerId, value) {
   writeProviderCredential(providerId, value);
+}
+
+// Deleting the managed key files cannot reach a key that also lives in the
+// macOS Keychain or the environment, so report what still resolves afterwards
+// instead of claiming the provider is disconnected.
+export function removeApiCredential(providerId) {
+  const provider = apiProvider(providerId);
+  const removedFiles = removeProviderCredential(provider);
+  if (removedFiles) disableProvider(provider.id);
+  const remaining = credentialStatus(provider, { persistent: true });
+  return {
+    provider: provider.id,
+    displayName: provider.displayName,
+    removedFiles,
+    stillConfigured: remaining.configured === true,
+    remainingSource: remaining.configured ? remaining.source : undefined,
+  };
 }

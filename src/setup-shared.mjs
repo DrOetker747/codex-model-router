@@ -127,9 +127,10 @@ export function providerConfigured(provider) {
 
 // Per-provider hint for a selected-but-unconfigured OAuth provider.
 function oauthSetupHint(provider) {
-  return provider.id === "grok-oauth"
-    ? "install the official Grok CLI and run `grok login --oauth`"
-    : `run \`kimi login\` (install the Kimi Code CLI from ${KIMI_CLI_INSTALL_URL} first if needed)`;
+  if (provider.id === "grok-oauth") {
+    return "install the official Grok CLI and run `grok login --oauth`";
+  }
+  return `run \`kimi login\` (install the Kimi Code CLI from ${KIMI_CLI_INSTALL_URL} first if needed)`;
 }
 
 function executable(name) {
@@ -171,7 +172,6 @@ function tryRun(command, commandArgs) {
 }
 
 function guidedSelection(appName) {
-  const providers = [...PROVIDERS.values()];
   const snapshots = providerOnboardingSnapshot().providers;
   const colorEnabled = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
   let selected = new Set(
@@ -196,7 +196,7 @@ function guidedSelection(appName) {
     }
   }
   return validateProviderIds(
-    [...selected].sort((a, b) => a - b).map((position) => providers[position - 1].id),
+    [...selected].sort((a, b) => a - b).map((position) => snapshots[position - 1].id),
   );
 }
 
